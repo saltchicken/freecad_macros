@@ -35,10 +35,21 @@ def generate_twisted_sketches(total_height=120.0, total_angle=100.0, num_section
         angle = t * total_angle
         sections_data.append((z, angle, i))
 
-    # Create a folder/group to keep your Tree View clean
-    group_name = "Twisted_Sketches_" + base_obj.Name
-    group = doc.addObject("App::DocumentObjectGroup", group_name)
-    group.Label = "Twisted_Profiles"
+    # --- Find the Active Body ---
+    active_body = None
+    if Gui.ActiveDocument:
+        # Ask the GUI for the currently active PartDesign Body
+        active_body = Gui.ActiveDocument.ActiveView.getActiveObject("pdbody")
+
+    # Fallback: If no body is globally active, check if the source sketch is inside a Body
+    if not active_body:
+        for parent in base_obj.InList:
+            if parent.isDerivedFrom("PartDesign::Body"):
+                active_body = parent
+                break
+                
+    if not active_body:
+        App.Console.PrintWarning("Warning: No Active Body found. Sketches will be placed in the document root.\n")
 
     # 3. Loop through and duplicate the Sketches
     for z, angle, i in sections_data:
@@ -55,8 +66,9 @@ def generate_twisted_sketches(total_height=120.0, total_angle=100.0, num_section
         else:
             new_sketch.Placement = new_placement
             
-        # Add to the group
-        group.addObject(new_sketch)
+        # Add the new sketch to the Active Body
+        if active_body:
+            active_body.addObject(new_sketch)
 
     doc.recompute()
     App.Console.PrintMessage(f"Successfully generated {num_sections} sketches from {base_obj.Label}!\n")
