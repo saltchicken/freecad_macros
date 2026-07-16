@@ -9,6 +9,7 @@ importlib.reload(MacroShared)
 # ==========================================
 # CORE LOGIC
 # ==========================================
+@MacroShared.with_undo("Twist Extrude")
 def generate_twisted_sketches(total_height=120.0, total_angle=100.0, num_sections=6):
     doc = App.ActiveDocument
     if doc is None: return

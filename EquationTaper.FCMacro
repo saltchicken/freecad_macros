@@ -12,6 +12,7 @@ importlib.reload(MacroShared)
 # ==========================================
 # CORE LOGIC
 # ==========================================
+@MacroShared.with_undo("Equation Taper")
 def generate_equation_taper(total_height=120.0, num_sections=12, equation_str="1.0 + sin(t * pi) * 0.5"):
     doc = App.ActiveDocument
     if doc is None: return

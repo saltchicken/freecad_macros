@@ -9,6 +9,7 @@ importlib.reload(MacroShared)
 # ==========================================
 # CORE LOGIC
 # ==========================================
+@MacroShared.with_undo("Path Twist Sweep")
 def generate_path_twist_sketches(total_angle=360.0, num_sections=24):
     doc = App.ActiveDocument
     if doc is None: return

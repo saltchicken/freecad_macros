@@ -1,5 +1,46 @@
+import functools
+
 import FreeCAD as App
 import FreeCADGui as Gui
+
+
+def with_undo(transaction_name="Macro Operation"):
+    """
+    A decorator that wraps a function in a FreeCAD undo transaction.
+    If the function succeeds, it commits. If it crashes, it aborts.
+    """
+
+    def decorator(func):
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            doc = App.ActiveDocument
+            if not doc:
+                App.Console.PrintError(
+                    "Error: No active document for undo transaction.\n")
+                return func(*args, **kwargs)
+
+            # 1. Start recording
+            doc.openTransaction(transaction_name)
+
+            try:
+                # Run the actual macro logic
+                result = func(*args, **kwargs)
+
+                # 2. Save the recording
+                doc.commitTransaction()
+                return result
+
+            except Exception as e:
+                # 3. Wipe the recording if something broke
+                doc.abortTransaction()
+                App.Console.PrintError(
+                    f"Undo Transaction Aborted. '{transaction_name}' failed: {e}\n"
+                )
+
+        return wrapper
+
+    return decorator
 
 
 def get_single_sketch(doc):
