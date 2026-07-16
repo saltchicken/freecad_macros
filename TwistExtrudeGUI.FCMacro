@@ -1,9 +1,0 @@
-import importlib
-from TwistExtrudeLib import core, gui
-
-# Reload for development (reload core first, then gui)
-importlib.reload(core)
-importlib.reload(gui)
-
-# Launch the UI
-gui.run()

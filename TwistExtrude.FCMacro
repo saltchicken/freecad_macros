@@ -1,8 +1,9 @@
 import importlib
-from TwistExtrudeLib import core
+from TwistExtrudeLib import core, gui
 
-# Force FreeCAD to reload the core module in case you made edits to it
+# Reload for development (reload core first, then gui)
 importlib.reload(core)
+importlib.reload(gui)
 
-# Run the function with hardcoded parameters
-core.generate_twisted_sketches(total_height=120.0, total_angle=360.0, num_sections=24)
+# Launch the UI
+gui.run()

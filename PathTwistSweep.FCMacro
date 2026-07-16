@@ -1,8 +1,9 @@
 import importlib
-from PathTwistSweepLib import core
+from PathTwistSweepLib import core, gui
 
-# Force FreeCAD to reload the core module for development
+# Reload for development
 importlib.reload(core)
+importlib.reload(gui)
 
-# Run with hardcoded parameters
-core.generate_path_twist_sketches(total_angle=360.0, num_sections=24)
+# Launch the UI
+gui.run()

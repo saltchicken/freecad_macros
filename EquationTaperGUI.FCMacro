@@ -1,7 +1,0 @@
-import importlib
-from EquationTaperLib import core, gui
-
-importlib.reload(core)
-importlib.reload(gui)
-
-gui.run()
