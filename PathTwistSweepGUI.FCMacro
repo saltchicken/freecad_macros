@@ -1,0 +1,9 @@
+import importlib
+from PathTwistSweepLib import core, gui
+
+# Reload for development
+importlib.reload(core)
+importlib.reload(gui)
+
+# Launch the UI
+gui.run()
