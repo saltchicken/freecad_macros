@@ -12,8 +12,8 @@ importlib.reload(MacroShared)
 # ==========================================
 # CORE LOGIC
 # ==========================================
-@MacroShared.with_undo("Equation Taper")
-def generate_equation_taper(total_height=120.0, num_sections=12, equation_str="1.0 + sin(t * pi) * 0.5"):
+@MacroShared.with_undo("Equation Twist Extrude")
+def generate_equation_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0 + sin(t * pi) * 0.5"):
     doc = App.ActiveDocument
     if doc is None: return
 
@@ -24,6 +24,7 @@ def generate_equation_taper(total_height=120.0, num_sections=12, equation_str="1
         App.Console.PrintError("Error: Need at least 2 sections.\n")
         return
 
+    # Safe math environment for eval()
     safe_env = {
         "math": math, "sin": math.sin, "cos": math.cos, "tan": math.tan,
         "pi": math.pi, "e": math.e, "pow": pow, "abs": abs,
@@ -36,7 +37,9 @@ def generate_equation_taper(total_height=120.0, num_sections=12, equation_str="1
     for i in range(num_sections):
         t = float(i) / (num_sections - 1)
         z = t * total_height
+        angle = t * total_angle
 
+        # 1. Evaluate the scaling equation
         local_env = safe_env.copy()
         local_env["t"] = t
         local_env["z"] = z
@@ -49,16 +52,20 @@ def generate_equation_taper(total_height=120.0, num_sections=12, equation_str="1
             
         scale_factor = max(0.001, float(scale_factor))
 
+        # 2. Scale the shape
         mat = App.Matrix()
         mat.scale(scale_factor, scale_factor, 1.0)
         
         scaled_shape = base_obj.Shape.copy()
         scaled_shape.transformShape(mat)
 
+        # 3. Create the new sketch layer
         new_sketch = Draft.make_sketch(scaled_shape.Edges, autoconstraints=False)
-        new_sketch.Label = f"{base_obj.Label}_EqLayer_{i+1}"
+        new_sketch.Label = f"{base_obj.Label}_EqTwist_{i+1}"
 
-        new_placement = App.Placement(App.Vector(0, 0, z), App.Rotation())
+        # 4. Apply BOTH height (z) and twist (angle) placement
+        new_placement = App.Placement(App.Vector(0, 0, z), App.Rotation(App.Vector(0, 0, 1), angle))
+        
         if hasattr(new_sketch, "MapMode") and new_sketch.MapMode != 'Deactivated':
             new_sketch.AttachmentOffset = new_placement
         else:
@@ -68,57 +75,74 @@ def generate_equation_taper(total_height=120.0, num_sections=12, equation_str="1
             active_body.addObject(new_sketch)
         created_sketches.append(new_sketch)
 
-    # Loft Generation
-    loft_label = f"EqLoft_{base_obj.Label}"
+    # 5. Generate the Loft
+    loft_label = f"EqTwistLoft_{base_obj.Label}"
     objects_to_hide = created_sketches + [base_obj]
     MacroShared.build_additive_loft(
         active_body, loft_label, created_sketches[0], created_sketches[1:], objects_to_hide
     )
 
     doc.recompute()
-    App.Console.PrintMessage("Successfully generated Equation Taper!\n")
+    App.Console.PrintMessage("Successfully generated Equation Twist Taper!\n")
 
 # ==========================================
 # GUI LOGIC
 # ==========================================
-class EquationTaperDialog(QtWidgets.QDialog):
+class EquationTwistDialog(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Equation Taper Generator")
-        self.resize(360, 240)
+        self.setWindowTitle("Equation + Twist Generator")
+        self.resize(380, 280)
         
         layout = QtWidgets.QVBoxLayout(self)
-        instruction_text = ("1. Select a Base Sketch.\n2. Define scaling formula using 't' (0.0 to 1.0).\n   Example: 1.0 + sin(t * pi) * 0.5")
+        instruction_text = ("1. Select a Base Sketch.\n"
+                            "2. Define scaling formula using 't' (0.0 to 1.0).\n"
+                            "3. Set rotation and height parameters.")
         layout.addWidget(QtWidgets.QLabel(instruction_text))
         
         form_layout = QtWidgets.QFormLayout()
         
+        # Height
         self.height_spin = QtWidgets.QDoubleSpinBox()
         self.height_spin.setRange(0.1, 10000.0)
         self.height_spin.setValue(100.0)
         self.height_spin.setSuffix(" mm")
         form_layout.addRow("Total Height:", self.height_spin)
+
+        # Twist Angle
+        self.angle_spin = QtWidgets.QDoubleSpinBox()
+        self.angle_spin.setRange(-3600.0, 3600.0)
+        self.angle_spin.setValue(360.0)
+        self.angle_spin.setSuffix(" °")
+        form_layout.addRow("Total Twist Angle:", self.angle_spin)
         
+        # Sections
         self.sections_spin = QtWidgets.QSpinBox()
         self.sections_spin.setRange(2, 500)
-        self.sections_spin.setValue(12)
+        self.sections_spin.setValue(24) # Defaulting slightly higher for smooth twists
         form_layout.addRow("Number of Sections:", self.sections_spin)
         
+        # Equation
         self.equation_input = QtWidgets.QLineEdit()
         self.equation_input.setText("1.0 + sin(t * pi) * 0.5")
         form_layout.addRow("Scale Formula:", self.equation_input)
         
         layout.addLayout(form_layout)
         
-        self.btn_gen = QtWidgets.QPushButton("Generate Equation Loft")
+        self.btn_gen = QtWidgets.QPushButton("Generate Loft")
         self.btn_gen.setStyleSheet("font-weight: bold; padding: 10px;")
         self.btn_gen.clicked.connect(self.generate)
         layout.addWidget(self.btn_gen)
 
     def generate(self):
-        generate_equation_taper(self.height_spin.value(), self.sections_spin.value(), self.equation_input.text())
+        generate_equation_twist(
+            self.height_spin.value(), 
+            self.angle_spin.value(), 
+            self.sections_spin.value(), 
+            self.equation_input.text()
+        )
         self.accept()
 
 # Launch
-dialog = EquationTaperDialog()
+dialog = EquationTwistDialog()
 dialog.show()
