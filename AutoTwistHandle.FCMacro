@@ -1,0 +1,74 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+
+def generate_twisted_handle(total_height=120.0, total_angle=100.0, num_sections=6, is_ruled=True):
+    doc = App.ActiveDocument
+    if doc is None:
+        App.Console.PrintError("Error: No active document found.\n")
+        return
+
+    # 1. Grab selection, or smartly fallback to the active object if selection was lost
+    selection = Gui.Selection.getSelection()
+    if selection:
+        base_obj = selection[0]
+    elif doc.ActiveObject:
+        base_obj = doc.ActiveObject
+        App.Console.PrintWarning(f"Warning: Nothing selected. Guessing you meant to use '{base_obj.Name}'.\n")
+    else:
+        App.Console.PrintError("Error: Please select a Sketch in the Tree View first!\n")
+        return
+
+    if not hasattr(base_obj, "Shape") or base_obj.Shape.isNull():
+        App.Console.PrintError("Error: The selected object does not have a valid shape.\n")
+        return
+
+    # 2. Safely calculate sections_data
+    if num_sections < 2:
+        App.Console.PrintError("Error: Need at least 2 sections to create a loft.\n")
+        return
+        
+    sections_data = []
+    for i in range(num_sections):
+        # float() ensures safe division across all Python environments
+        t = float(i) / (num_sections - 1)
+        z = t * total_height
+        angle = t * total_angle
+        sections_data.append((z, angle))
+
+    profiles = []
+    
+    # 3. Loop through and build twisted copies
+    for z, angle in sections_data:
+        profile_copy = base_obj.Shape.copy()
+        profile_copy.translate(App.Vector(0, 0, z))
+        profile_copy.rotate(App.Vector(0, 0, z), App.Vector(0, 0, 1), angle)
+        
+        if profile_copy.Wires:
+            profiles.append(profile_copy.Wires[0])
+        else:
+            App.Console.PrintError(f"Error: Could not extract a wire frame from {base_obj.Name} at layer {i}.\n")
+            return 
+
+    # 4. Create the loft (Solid=True, Ruled=is_ruled)
+    try:
+        handle_loft = Part.makeLoft(profiles, True, is_ruled)
+    except Exception as e:
+        App.Console.PrintError(f"Loft generation mathematically failed: {e}\n")
+        return
+    
+    # Check if OpenCASCADE silently choked on the geometry
+    if handle_loft.isNull():
+        App.Console.PrintError("Error: Loft executed but generated a Null shape (likely due to self-intersection). Try lowering num_sections or setting is_ruled=True.\n")
+        return
+    
+    # 5. Add to tree
+    new_obj_name = "Twisted_" + base_obj.Name
+    obj = doc.addObject("Part::Feature", new_obj_name)
+    obj.Shape = handle_loft
+    
+    doc.recompute()
+    App.Console.PrintMessage(f"Successfully generated ergonomic handle from {base_obj.Name}!\n")
+
+# Run the function (Rule of thumb: use is_ruled=True for aggressive twists)
+generate_twisted_handle(total_height=120, total_angle=360.0, num_sections=10, is_ruled=True)

@@ -1,0 +1,55 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+
+def generate_twisted_handle():
+    # 1. Define your variable spacing and rotation
+    # Format: (Z_height_in_mm, Rotation_Angle_in_Degrees)
+    sections_data = [
+        (0, 0),       
+        (20, 15),     
+        (50, 45),     
+        (90, 90),     
+        (110, 100),   
+        (120, 100)    
+    ]
+
+    # 2. Grab the current selection
+    selection = Gui.Selection.getSelection()
+    if not selection:
+        App.Console.PrintError("Error: Please select a Sketch first!\n")
+        return
+
+    base_obj = selection[0]
+    if not hasattr(base_obj, "Shape") or base_obj.Shape.isNull():
+        App.Console.PrintError("Error: The selected object does not have a valid shape.\n")
+        return
+
+    doc = App.ActiveDocument
+    profiles = []
+    
+    # 3. Loop through data and build the twisted copies
+    for z, angle in sections_data:
+        profile_copy = base_obj.Shape.copy()
+        profile_copy.translate(App.Vector(0, 0, z))
+        profile_copy.rotate(App.Vector(0, 0, z), App.Vector(0, 0, 1), angle)
+        
+        if profile_copy.Wires:
+            profiles.append(profile_copy.Wires[0])
+        else:
+            App.Console.PrintError(f"Error: Could not extract a wire frame from {base_obj.Name}.\n")
+            return # Stop the script if a layer fails
+
+    # 4. Create the smooth loft
+    handle_loft = Part.makeLoft(profiles, True, False)
+    
+    # Add to tree
+    new_obj_name = "Twisted_" + base_obj.Name
+    obj = doc.addObject("Part::Feature", new_obj_name)
+    obj.Shape = handle_loft
+    
+    doc.recompute()
+    App.Console.PrintMessage(f"Successfully generated ergonomic handle from {base_obj.Name}!\n")
+
+# Run the function
+generate_twisted_handle()
