@@ -21,22 +21,34 @@ def generate_path_twist_sketches(total_angle=360.0, num_sections=24):
         App.Console.PrintError("Error: The first selected object must be a Sketch (Profile).\n")
         return
 
-    if not hasattr(path_obj, "Shape") or len(path_obj.Shape.Edges) == 0:
-        App.Console.PrintError("Error: The second selected object must have a valid curve/path.\n")
+    if not hasattr(path_obj, "Shape") or len(path_obj.Shape.Wires) == 0:
+        App.Console.PrintError("Error: The path object must contain a connected continuous curve.\n")
         return
 
     if num_sections < 2:
         App.Console.PrintError("Error: Need at least 2 sections.\n")
         return
 
-    # 2. Setup the Path edge
-    # We grab the first edge of the shape. For best results, users should use a single continuous B-Spline or Arc.
-    path_edge = path_obj.Shape.Edges[0]
-    if len(path_obj.Shape.Edges) > 1:
-        App.Console.PrintWarning("Warning: Path has multiple edges. Only the first edge will be used. Consider using a single B-Spline for smooth paths.\n")
-
-    # Get the parameter bounds for the curve to interpolate along its length
-    u_min, u_max = path_edge.ParameterRange
+    # 2. Extract the continuous Wire and map our points
+    # Wires[0] contains the correctly ordered sequence of all lines/arcs in the path
+    path_wire = path_obj.Shape.Wires[0]
+    
+    # Discretize evaluates the entire wire length and returns evenly spaced points
+    points = path_wire.discretize(Number=num_sections)
+    
+    # Calculate tangents (direction vectors) based on the adjacent points
+    tangents = []
+    for i in range(num_sections):
+        if i == 0:
+            t_vec = points[1] - points[0]
+        elif i == num_sections - 1:
+            t_vec = points[-1] - points[-2]
+        else:
+            # Central difference for a smoother normal transition across corners
+            t_vec = points[i+1] - points[i-1]
+            
+        t_vec.normalize()
+        tangents.append(t_vec)
 
     # --- Find the Active Body ---
     active_body = None
@@ -54,23 +66,20 @@ def generate_path_twist_sketches(total_angle=360.0, num_sections=24):
 
     created_sketches = []
 
-    # 3. Loop through and duplicate Sketches along the curve
+    # 3. Loop through and duplicate Sketches along the entire discretized curve
     for i in range(num_sections):
-        # Calculate parametric interpolation
+        point = points[i]
+        tangent = tangents[i]
+        
+        # Calculate proportional angle
         t_ratio = float(i) / (num_sections - 1)
-        t_param = u_min + (t_ratio * (u_max - u_min))
         angle = t_ratio * total_angle
-
-        # Get the 3D Point and Tangent (Direction) at this exact spot on the curve
-        point = path_edge.valueAt(t_param)
-        tangent = path_edge.tangentAt(t_param)
-        tangent.normalize()
 
         # Duplicate the sketch
         new_sketch = doc.copyObject(profile_obj)
         new_sketch.Label = f"{profile_obj.Label}_SweepLayer_{i+1}"
         
-        # Calculate rotation: Align sketch Z-axis to the path's tangent
+        # Calculate rotation: Align sketch Z-axis to the path's local tangent
         z_vec = App.Vector(0, 0, 1)
         
         # Handle mathematical edge cases where the path is completely vertical
@@ -86,7 +95,6 @@ def generate_path_twist_sketches(total_angle=360.0, num_sections=24):
         
         # Combine the alignments (Twist first, then align to path)
         final_rot = align_rot.multiply(twist_rot)
-        
         new_placement = App.Placement(point, final_rot)
         
         # PartDesign compatibility check
