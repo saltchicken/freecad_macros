@@ -50,8 +50,6 @@ def generate_twisted_sketches(total_height=120.0, total_angle=100.0, num_section
         new_placement = App.Placement(App.Vector(0, 0, z), App.Rotation(App.Vector(0, 0, 1), angle))
         
         # PartDesign compatibility check: 
-        # If the sketch is mapped to a plane (XY, XZ, etc.), we must move its AttachmentOffset.
-        # If it is floating unattached, we move its Base Placement.
         if hasattr(new_sketch, "MapMode") and new_sketch.MapMode != 'Deactivated':
             new_sketch.AttachmentOffset = new_placement
         else:
@@ -62,6 +60,3 @@ def generate_twisted_sketches(total_height=120.0, total_angle=100.0, num_section
 
     doc.recompute()
     App.Console.PrintMessage(f"Successfully generated {num_sections} sketches from {base_obj.Label}!\n")
-
-# Run the function 
-generate_twisted_sketches(total_height=120.0, total_angle=360.0, num_sections=)
