@@ -51,6 +51,9 @@ def generate_twisted_sketches(total_height=120.0, total_angle=100.0, num_section
     if not active_body:
         App.Console.PrintWarning("Warning: No Active Body found. Sketches will be placed in the document root.\n")
 
+    # List to track all newly created sketches for the loft
+    created_sketches = []
+
     # 3. Loop through and duplicate the Sketches
     for z, angle, i in sections_data:
         # Ask FreeCAD to natively duplicate the Sketch object
@@ -69,6 +72,35 @@ def generate_twisted_sketches(total_height=120.0, total_angle=100.0, num_section
         # Add the new sketch to the Active Body
         if active_body:
             active_body.addObject(new_sketch)
+            
+        # Store for the lofting process
+        created_sketches.append(new_sketch)
+
+    # 4. Generate the Additive Loft
+    if active_body and len(created_sketches) > 1:
+        try:
+            loft_label = f"TwistLoft_{base_obj.Label}"
+            
+            # Create the Additive Loft feature inside the Active Body
+            loft = active_body.newObject("PartDesign::AdditiveLoft", loft_label)
+            
+            # The first sketch acts as the foundational profile
+            loft.Profile = created_sketches[0]
+            
+            # All subsequent sketches act as the sections
+            loft.Sections = created_sketches[1:]
+            
+            # Clean up the viewport: hide the original and generated sketches
+            if Gui.ActiveDocument:
+                Gui.ActiveDocument.getObject(base_obj.Name).Visibility = False
+                for sk in created_sketches:
+                    Gui.ActiveDocument.getObject(sk.Name).Visibility = False
+                    
+        except Exception as e:
+            App.Console.PrintError(f"Error generating Additive Loft: {e}\n")
+            
+    elif not active_body:
+        App.Console.PrintWarning("Skipped Additive Loft: Cannot create a loft because the sketches are not inside a PartDesign Body.\n")
 
     doc.recompute()
-    App.Console.PrintMessage(f"Successfully generated {num_sections} sketches from {base_obj.Label}!\n")
+    App.Console.PrintMessage(f"Successfully generated 3D twisted loft from {num_sections} sketches based on {base_obj.Label}!\n")
