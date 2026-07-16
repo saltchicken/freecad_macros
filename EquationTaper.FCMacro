@@ -1,0 +1,7 @@
+import importlib
+from EquationTaperLib import core
+
+importlib.reload(core)
+
+# Run with hardcoded test parameters (creates an exponential flare)
+core.generate_equation_taper(total_height=100.0, num_sections=15, equation_str="1.0 + pow(t, 2)")
