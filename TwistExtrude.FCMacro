@@ -92,6 +92,7 @@ class TwistExtrudeDialog(QtWidgets.QDialog):
 
     def generate(self):
         generate_twisted_sketches(self.height_spin.value(), self.angle_spin.value(), self.sections_spin.value())
+        self.accept()
 
 # Launch
 dialog = TwistExtrudeDialog()

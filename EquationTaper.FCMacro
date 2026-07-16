@@ -117,6 +117,7 @@ class EquationTaperDialog(QtWidgets.QDialog):
 
     def generate(self):
         generate_equation_taper(self.height_spin.value(), self.sections_spin.value(), self.equation_input.text())
+        self.accept()
 
 # Launch
 dialog = EquationTaperDialog()

@@ -126,6 +126,7 @@ class PathTwistSweepDialog(QtWidgets.QDialog):
 
     def generate(self):
         generate_path_twist_sketches(self.angle_spin.value(), self.sections_spin.value())
+        self.accept()
 
 # Launch
 dialog = PathTwistSweepDialog()
