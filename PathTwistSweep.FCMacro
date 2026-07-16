@@ -1,9 +1,131 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+from PySide6 import QtWidgets
 import importlib
-from PathTwistSweepLib import core, gui
 
-# Reload for development
-importlib.reload(core)
-importlib.reload(gui)
+from SharedLib import MacroShared
+importlib.reload(MacroShared)
 
-# Launch the UI
-gui.run()
+# ==========================================
+# CORE LOGIC
+# ==========================================
+def generate_path_twist_sketches(total_angle=360.0, num_sections=24):
+    doc = App.ActiveDocument
+    if doc is None: return
+
+    selection = Gui.Selection.getSelection()
+    if len(selection) < 2:
+        App.Console.PrintError("Error: Select the Profile Sketch, then Ctrl+click the Path Sketch.\n")
+        return
+
+    profile_obj = selection[0]
+    path_obj = selection[1]
+
+    if not hasattr(profile_obj, "TypeId") or "Sketcher::SketchObject" not in profile_obj.TypeId:
+        App.Console.PrintError("Error: The first selected object must be a Sketch (Profile).\n")
+        return
+
+    if not hasattr(path_obj, "Shape") or len(path_obj.Shape.Wires) == 0:
+        App.Console.PrintError("Error: The path object must contain a connected continuous curve.\n")
+        return
+
+    if num_sections < 2: return
+
+    path_wire = path_obj.Shape.Wires[0]
+    points = path_wire.discretize(Number=num_sections)
+    
+    tangents = []
+    for i in range(num_sections):
+        if i == 0:
+            t_vec = points[1] - points[0]
+        elif i == num_sections - 1:
+            t_vec = points[-1] - points[-2]
+        else:
+            t_vec = points[i+1] - points[i-1]
+        t_vec.normalize()
+        tangents.append(t_vec)
+
+    active_body = MacroShared.get_active_body(profile_obj)
+    created_sketches = []
+
+    for i in range(num_sections):
+        point = points[i]
+        tangent = tangents[i]
+        
+        t_ratio = float(i) / (num_sections - 1)
+        angle = t_ratio * total_angle
+
+        new_sketch = doc.copyObject(profile_obj)
+        new_sketch.Label = f"{profile_obj.Label}_SweepLayer_{i+1}"
+        
+        z_vec = App.Vector(0, 0, 1)
+        if z_vec.dot(tangent) < -0.9999:
+            align_rot = App.Rotation(App.Vector(1, 0, 0), 180)
+        elif z_vec.dot(tangent) > 0.9999:
+            align_rot = App.Rotation(0, 0, 0)
+        else:
+            align_rot = App.Rotation(z_vec, tangent)
+        
+        twist_rot = App.Rotation(App.Vector(0, 0, 1), angle)
+        final_rot = align_rot.multiply(twist_rot)
+        new_placement = App.Placement(point, final_rot)
+        
+        if hasattr(new_sketch, "MapMode") and new_sketch.MapMode != 'Deactivated':
+            new_sketch.AttachmentOffset = new_placement
+        else:
+            new_sketch.Placement = new_placement
+            
+        if active_body:
+            active_body.addObject(new_sketch)
+        created_sketches.append(new_sketch)
+
+    # Loft Generation
+    loft_label = f"PathLoft_{profile_obj.Label}"
+    objects_to_hide = created_sketches + [profile_obj]
+    MacroShared.build_additive_loft(
+        active_body, loft_label, created_sketches[0], created_sketches[1:], objects_to_hide
+    )
+
+    doc.recompute()
+    App.Console.PrintMessage(f"Successfully generated sweep from {num_sections} sections!\n")
+
+
+# ==========================================
+# GUI LOGIC
+# ==========================================
+class PathTwistSweepDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Path Twist Sweep Generator")
+        self.resize(320, 200)
+        
+        layout = QtWidgets.QVBoxLayout(self)
+        instruction_text = ("1. Select the Profile Sketch.\n2. Ctrl+click the Path Sketch.\n3. Set parameters below.\n4. Click Generate.")
+        layout.addWidget(QtWidgets.QLabel(instruction_text))
+        
+        form_layout = QtWidgets.QFormLayout()
+        
+        self.angle_spin = QtWidgets.QDoubleSpinBox()
+        self.angle_spin.setRange(-3600.0, 3600.0)
+        self.angle_spin.setValue(360.0)
+        self.angle_spin.setSuffix(" °")
+        form_layout.addRow("Total Twist Angle:", self.angle_spin)
+        
+        self.sections_spin = QtWidgets.QSpinBox()
+        self.sections_spin.setRange(2, 500)
+        self.sections_spin.setValue(24)
+        form_layout.addRow("Number of Sections:", self.sections_spin)
+        
+        layout.addLayout(form_layout)
+        
+        self.btn_gen = QtWidgets.QPushButton("Generate Sweep")
+        self.btn_gen.setStyleSheet("font-weight: bold; padding: 10px;")
+        self.btn_gen.clicked.connect(self.generate)
+        layout.addWidget(self.btn_gen)
+
+    def generate(self):
+        generate_path_twist_sketches(self.angle_spin.value(), self.sections_spin.value())
+
+# Launch
+dialog = PathTwistSweepDialog()
+dialog.show()
