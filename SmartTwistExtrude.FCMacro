@@ -1,0 +1,202 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import Draft
+import math
+from PySide6 import QtWidgets
+import importlib
+
+from SharedLib import MacroShared
+importlib.reload(MacroShared)
+
+# ==========================================
+# CORE LOGIC
+# ==========================================
+@MacroShared.with_undo("Smart Twist Extrude")
+def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0"):
+    doc = App.ActiveDocument
+    if doc is None: return
+
+    selection = Gui.Selection.getSelection()
+    if not selection:
+        App.Console.PrintError("Error: Select at least a Profile Sketch.\n")
+        return
+
+    profile_obj = selection[0]
+    if not hasattr(profile_obj, "TypeId") or "Sketcher::SketchObject" not in profile_obj.TypeId:
+        App.Console.PrintError("Error: The first selected object must be a Sketch (Profile).\n")
+        return
+
+    # Check if a second object is selected to act as a path
+    path_obj = selection[1] if len(selection) >= 2 else None
+    is_path_mode = False
+    points, tangents = [], []
+
+    if path_obj:
+        if hasattr(path_obj, "Shape") and len(path_obj.Shape.Wires) > 0:
+            is_path_mode = True
+            path_wire = path_obj.Shape.Wires[0]
+            points = path_wire.discretize(Number=num_sections)
+
+            # Calculate tangency vectors for path orientation
+            for i in range(num_sections):
+                if i == 0:
+                    t_vec = points[1] - points[0]
+                elif i == num_sections - 1:
+                    t_vec = points[-1] - points[-2]
+                else:
+                    t_vec = points[i+1] - points[i-1]
+                t_vec.normalize()
+                tangents.append(t_vec)
+        else:
+            App.Console.PrintWarning("Warning: Second selection is not a valid path. Defaulting to Straight Extrude.\n")
+
+    if num_sections < 2: return
+
+    # Safe math environment for eval()
+    safe_env = {
+        "math": math, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+        "pi": math.pi, "e": math.e, "pow": pow, "abs": abs,
+        "sqrt": math.sqrt, "log": math.log
+    }
+
+    active_body = MacroShared.get_active_body(profile_obj)
+    created_sketches = []
+
+    for i in range(num_sections):
+        t = float(i) / (num_sections - 1)
+        angle = t * total_angle
+        z = t * total_height if not is_path_mode else 0.0
+
+        # 1. Evaluate the scaling equation
+        local_env = safe_env.copy()
+        local_env["t"] = t
+        local_env["z"] = z
+
+        try:
+            scale_factor = eval(equation_str, {"__builtins__": {}}, local_env)
+        except Exception as e:
+            App.Console.PrintError(f"Math Evaluation Error at section {i+1}: {e}\n")
+            return
+
+        scale_factor = max(0.001, float(scale_factor))
+
+        # 2. Scale the shape
+        mat = App.Matrix()
+        mat.scale(scale_factor, scale_factor, 1.0)
+
+        scaled_shape = profile_obj.Shape.copy()
+        scaled_shape.transformShape(mat)
+
+        # 3. Create the new sketch layer
+        new_sketch = Draft.make_sketch(scaled_shape.Edges, autoconstraints=False)
+        mode_label = "PathSweep" if is_path_mode else "EqTwist"
+        new_sketch.Label = f"{profile_obj.Label}_{mode_label}_{i+1}"
+
+        # 4. Placement Logic (Routed based on mode)
+        if is_path_mode:
+            point = points[i]
+            tangent = tangents[i]
+            z_vec = App.Vector(0, 0, 1)
+
+            if z_vec.dot(tangent) < -0.9999:
+                align_rot = App.Rotation(App.Vector(1, 0, 0), 180)
+            elif z_vec.dot(tangent) > 0.9999:
+                align_rot = App.Rotation(0, 0, 0)
+            else:
+                align_rot = App.Rotation(z_vec, tangent)
+
+            twist_rot = App.Rotation(App.Vector(0, 0, 1), angle)
+            final_rot = align_rot.multiply(twist_rot)
+            new_placement = App.Placement(point, final_rot)
+        else:
+            new_placement = App.Placement(App.Vector(0, 0, z), App.Rotation(App.Vector(0, 0, 1), angle))
+
+        if hasattr(new_sketch, "MapMode") and new_sketch.MapMode != 'Deactivated':
+            new_sketch.AttachmentOffset = new_placement
+        else:
+            new_sketch.Placement = new_placement
+
+        if active_body:
+            active_body.addObject(new_sketch)
+        created_sketches.append(new_sketch)
+
+    # 5. Loft Generation
+    loft_label = f"SmartLoft_{profile_obj.Label}"
+    objects_to_hide = created_sketches + [profile_obj]
+    if is_path_mode and path_obj:
+        objects_to_hide.append(path_obj)
+
+    MacroShared.build_additive_loft(
+        active_body, loft_label, created_sketches[0], created_sketches[1:], objects_to_hide
+    )
+
+    doc.recompute()
+    mode_text = "Path Sweep" if is_path_mode else "Straight Extrude"
+    App.Console.PrintMessage(f"Successfully generated {mode_text} Loft!\n")
+
+
+# ==========================================
+# GUI LOGIC
+# ==========================================
+class SmartTwistDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Smart Twist Generator")
+        self.resize(400, 320)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        instruction_text = (
+            "<b>1.</b> Select Profile Sketch.<br>"
+            "<b>2.</b> (Optional) Ctrl+click Path Sketch.<br>"
+            "<b>3.</b> Set parameters below."
+        )
+        layout.addWidget(QtWidgets.QLabel(instruction_text))
+
+        form_layout = QtWidgets.QFormLayout()
+
+        # Height (Note added for clarity)
+        self.height_spin = QtWidgets.QDoubleSpinBox()
+        self.height_spin.setRange(0.1, 10000.0)
+        self.height_spin.setValue(100.0)
+        self.height_spin.setSuffix(" mm")
+        self.height_spin.setToolTip("Ignored if a Path sketch is selected.")
+        form_layout.addRow("Total Height (Straight only):", self.height_spin)
+
+        # Twist Angle
+        self.angle_spin = QtWidgets.QDoubleSpinBox()
+        self.angle_spin.setRange(-3600.0, 3600.0)
+        self.angle_spin.setValue(360.0)
+        self.angle_spin.setSuffix(" °")
+        form_layout.addRow("Total Twist Angle:", self.angle_spin)
+
+        # Sections
+        self.sections_spin = QtWidgets.QSpinBox()
+        self.sections_spin.setRange(2, 500)
+        self.sections_spin.setValue(24)
+        form_layout.addRow("Number of Sections:", self.sections_spin)
+
+        # Equation
+        self.equation_input = QtWidgets.QLineEdit()
+        self.equation_input.setText("1.0 + sin(t * pi) * 0.5")
+        form_layout.addRow("Scale Formula 'f(t)':", self.equation_input)
+
+        layout.addLayout(form_layout)
+
+        self.btn_gen = QtWidgets.QPushButton("Generate")
+        self.btn_gen.setStyleSheet("font-weight: bold; padding: 10px;")
+        self.btn_gen.clicked.connect(self.generate)
+        layout.addWidget(self.btn_gen)
+
+    def generate(self):
+        generate_smart_twist(
+            self.height_spin.value(), 
+            self.angle_spin.value(), 
+            self.sections_spin.value(), 
+            self.equation_input.text()
+        )
+        self.accept()
+
+# Launch
+dialog = SmartTwistDialog()
+dialog.show()
