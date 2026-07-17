@@ -1,0 +1,157 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+
+def get_vertex_key(vertex, tolerance=4):
+    """Rounds vertex coordinates to create a reliable dictionary key."""
+    return (round(vertex.Point.x, tolerance),
+            round(vertex.Point.y, tolerance),
+            round(vertex.Point.z, tolerance))
+
+def get_outward_tangent(edge, vertex_point):
+    """
+    Calculates the tangent vector of an edge at a specific vertex,
+    oriented pointing *away* from the vertex.
+    """
+    try:
+        v_start = edge.Vertexes[0].Point
+        v_end = edge.Vertexes[-1].Point
+
+        # If vertex is the start of the edge, tangent inherently points inward/along the edge
+        if (v_start - vertex_point).Length < 1e-4:
+            param = edge.ParameterRange[0]
+            return edge.tangentAt(param).normalize()
+
+        # If vertex is the end, tangent points outward, so we reverse it to point "into" the edge
+        # Wait, we want it pointing AWAY from the vertex.
+        # Start vertex tangent points away. End vertex tangent points toward.
+        elif (v_end - vertex_point).Length < 1e-4:
+            param = edge.ParameterRange[1]
+            vec = edge.tangentAt(param).normalize()
+            return vec.multiply(-1.0)
+
+    except Exception as e:
+        return None
+    return None
+
+def find_best_continuation(current_edge, current_edge_name, vertex_point, connected_edges, angle_tolerance=45.0):
+    """Finds the smoothest connecting edge at a junction."""
+    if not connected_edges:
+        return None
+
+    current_tangent = get_outward_tangent(current_edge, vertex_point)
+    if not current_tangent:
+        return connected_edges[0] if len(connected_edges) == 1 else None
+
+    best_edge = None
+    best_edge_name = None
+    min_angle = 180.0
+
+    for edge_name, edge in connected_edges:
+        if edge_name == current_edge_name:
+            continue
+
+        next_tangent = get_outward_tangent(edge, vertex_point)
+        if not next_tangent:
+            continue
+
+        # We want the vectors to be pointing in opposite directions from the shared vertex
+        # to form a straight line, so we measure the angle between them.
+        # A perfectly smooth continuation has an angle of 180 degrees between outward tangents.
+        dot_prod = current_tangent.dot(next_tangent)
+        dot_prod = max(-1.0, min(1.0, dot_prod)) # Clamp for floating point errors
+
+        import math
+        angle = math.degrees(math.acos(dot_prod))
+        deviation = abs(180.0 - angle) # 0 deviation = perfect G1 continuity
+
+        if deviation < min_angle and deviation <= angle_tolerance:
+            min_angle = deviation
+            best_edge = edge
+            best_edge_name = edge_name
+
+    return (best_edge_name, best_edge) if best_edge else None
+
+def select_smart_loop():
+    sel_ex = Gui.Selection.getSelectionEx()
+    if not sel_ex:
+        App.Console.PrintError("SmartLoop: Select at least one edge first.\n")
+        return
+
+    sel_object = sel_ex[0]
+    obj = sel_object.Object
+    sub_names = sel_object.SubElementNames
+
+    if not sub_names or not sub_names[0].startswith("Edge"):
+        App.Console.PrintError("SmartLoop: The selected element must be an Edge.\n")
+        return
+
+    start_edge_name = sub_names[0]
+    shape = obj.Shape
+
+    # 1. Map all edges to their vertices
+    # Dictionary format: { vertex_key: [(edge_name, edge_object), ...] }
+    vertex_map = {}
+    edges = shape.Edges
+
+    for i, edge in enumerate(edges):
+        edge_name = f"Edge{i+1}"
+        for vertex in edge.Vertexes:
+            v_key = get_vertex_key(vertex)
+            if v_key not in vertex_map:
+                vertex_map[v_key] = []
+            vertex_map[v_key].append((edge_name, edge))
+
+    start_edge = None
+    for name, edge in vertex_map[get_vertex_key(shape.getElement(start_edge_name).Vertexes[0])]:
+        if name == start_edge_name:
+            start_edge = edge
+            break
+
+    if not start_edge:
+        return
+
+    # 2. Traverse the loop in both directions
+    loop_edge_names = set([start_edge_name])
+    endpoints = [start_edge.Vertexes[0], start_edge.Vertexes[-1]]
+
+    for start_vertex in endpoints:
+        current_vertex = start_vertex
+        current_edge_name = start_edge_name
+        current_edge = start_edge
+
+        while True:
+            v_key = get_vertex_key(current_vertex)
+            connected = vertex_map.get(v_key, [])
+
+            # Remove already visited edges from consideration to prevent infinite loops
+            candidates = [e for e in connected if e[0] not in loop_edge_names]
+
+            if not candidates:
+                break # Dead end or loop closed
+
+            best_match = find_best_continuation(current_edge, current_edge_name, current_vertex.Point, candidates)
+
+            if not best_match:
+                break # Corner was too sharp based on angle_tolerance
+
+            next_edge_name, next_edge = best_match
+            loop_edge_names.add(next_edge_name)
+
+            # Move to the next vertex
+            v0_key = get_vertex_key(next_edge.Vertexes[0])
+            v1_key = get_vertex_key(next_edge.Vertexes[-1])
+
+            current_vertex = next_edge.Vertexes[1] if v0_key == v_key and len(next_edge.Vertexes) > 1 else next_edge.Vertexes[0]
+            current_edge = next_edge
+            current_edge_name = next_edge_name
+
+    # 3. Apply the selection to the GUI
+    Gui.Selection.clearSelection()
+    for edge_name in loop_edge_names:
+        Gui.Selection.addSelection(obj, edge_name)
+
+    App.Console.PrintMessage(f"SmartLoop: Selected {len(loop_edge_names)} connected edges.\n")
+
+# Run the tool
+select_smart_loop()
