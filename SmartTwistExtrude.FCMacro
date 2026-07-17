@@ -82,17 +82,14 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
 
         scale_factor = max(0.001, float(scale_factor))
 
-        # 2. Scale the shape
-        mat = App.Matrix()
-        mat.scale(scale_factor, scale_factor, 1.0)
-
-        scaled_shape = profile_obj.Shape.copy()
-        scaled_shape.transformShape(mat)
-
-        # 3. Create the new sketch layer
-        new_sketch = Draft.make_sketch(scaled_shape.Edges, autoconstraints=False)
+        # 2 & 3. Create a live Parametric Clone instead of a static shape snapshot
+        new_sketch = Draft.make_clone(profile_obj)
         mode_label = "PathSweep" if is_path_mode else "EqTwist"
         new_sketch.Label = f"{profile_obj.Label}_{mode_label}_{i+1}"
+
+        # Apply scaling parametrically via the Clone's Scale property
+        if hasattr(new_sketch, "Scale"):
+            new_sketch.Scale = App.Vector(scale_factor, scale_factor, 1.0)
 
         # 4. Placement Logic (Routed based on mode)
         if is_path_mode:
