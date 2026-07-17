@@ -176,6 +176,7 @@ class SmartGrowthTaskPanel:
         # Presets
         self.preset_cb = QtWidgets.QComboBox()
         self.presets = {
+            "Mycelium Web": {"axiom": "[--X][X][++X]", "rules": "X=F[+X][-X]F[\\X][/X]X; F=FF", "angle": 30.0, "gen": 5},
             "2D Fern": {"axiom": "X", "rules": "X=F+[[X]-X]-F[-FX]+X; F=FF", "angle": 25.0, "gen": 5},
             "3D Fern (Spiral)": {"axiom": "X", "rules": "X=F+\\[[X]-X]-F[-FX]+X; F=FF", "angle": 25.0, "gen": 5},
             "3D Fractal Tree": {"axiom": "X", "rules": "X=F[+X][^X][-X][&X]; F=FF", "angle": 25.0, "gen": 4},
