@@ -2,10 +2,15 @@ import FreeCAD as App
 import FreeCADGui as Gui
 import Part
 import math
+from PySide6 import QtWidgets, QtCore
 import importlib
 
 from SharedLib import MacroShared
 importlib.reload(MacroShared)
+
+# ==========================================
+# CORE LOGIC
+# ==========================================
 
 def parse_rules(rule_str):
     rules = {}
@@ -24,16 +29,15 @@ def expand_l_system(axiom, rules, generations):
         current = "".join(next_str)
     return current
 
-@MacroShared.with_undo("Smart Fern Solid")
-def generate_solid_fern():
+@MacroShared.with_undo("Smart Edge Growth")
+def generate_bridging_geometry(axiom, rule_str, generations, angle_deg, base_radius):
     doc = App.ActiveDocument
     if not doc:
         App.Console.PrintError("Error: No active document.\n")
         return
 
-    # 1. Selection & Validation
+    # 1. Selection Validation
     sel_ex = Gui.Selection.getSelectionEx()
-
     edges = []
     for sel_obj in sel_ex:
         for sub_obj in sel_obj.SubObjects:
@@ -41,21 +45,20 @@ def generate_solid_fern():
                 edges.append(sub_obj)
 
     if len(edges) != 2:
-        App.Console.PrintError(f"Error: Found {len(edges)} edge(s). Please Ctrl+Click exactly two edges.\n")
+        App.Console.PrintError(f"Error: Found {len(edges)} edge(s). Please Ctrl+Click exactly two parallel edges.\n")
         return
 
     edge1 = edges[0]
     edge2 = edges[1]
 
-    # 2. Calculate the Plane Math
+    # 2. Calculate the Sketch Plane Math
     p1 = edge1.CenterOfMass
     p2 = edge2.CenterOfMass
 
     e1_vec = edge1.Vertexes[-1].Point - edge1.Vertexes[0].Point
     e2_vec = edge2.Vertexes[-1].Point - edge2.Vertexes[0].Point
 
-    if e1_vec.Length < 1e-4 or e2_vec.Length < 1e-4:
-        return
+    if e1_vec.Length < 1e-4 or e2_vec.Length < 1e-4: return
 
     e1_dir = e1_vec.normalize()
     e2_dir = e2_vec.normalize()
@@ -64,6 +67,7 @@ def generate_solid_fern():
         App.Console.PrintError("Error: The selected edges do not appear to be parallel.\n")
         return
 
+    # X-axis along edge 1, Y-axis points toward edge 2
     x_dir = e1_dir
     bridge_vec = p2 - p1
     z_dir = x_dir.cross(bridge_vec).normalize()
@@ -75,69 +79,58 @@ def generate_solid_fern():
         App.Console.PrintError("Error: Edges are overlapping or too close.\n")
         return
 
-    # 3. 2D L-System Math (XY Plane)
-    axiom = "X"
-    rule_str = "X=F+[[X]-X]-F[-FX]+X; F=FF"
-    generations = 5
-    angle_deg = 25.0
-
+    # 3. L-System Expansion
     rules = parse_rules(rule_str)
     l_string = expand_l_system(axiom, rules, generations)
 
-    pos_x, pos_y = 0.0, 0.0
-    angle = 90.0
+    # 4. 3D Turtle Generation (Growing along local Y-axis)
+    pos = App.Vector(0, 0, 0)
+    rot = App.Rotation(0, 0, 0)
     stack = []
-
-    # We will store lines to calculate the bounding box later
-    lines_2d = []
-    length = 1.0
-
-    for char in l_string:
-        if char == 'F':
-            rad = math.radians(angle)
-            nx = pos_x + math.cos(rad) * length
-            ny = pos_y + math.sin(rad) * length
-            lines_2d.append((App.Vector(pos_x, pos_y, 0), App.Vector(nx, ny, 0)))
-            pos_x, pos_y = nx, ny
-
-        elif char == '+': angle += angle_deg
-        elif char == '-': angle -= angle_deg
-        elif char == '[': stack.append((pos_x, pos_y, angle))
-        elif char == ']':
-            if stack:
-                pos_x, pos_y, angle = stack.pop()
-
-    if not lines_2d:
-        return
-
-    # 4. Generate 3D Solid Tubes
-    # Radius relative to the unit length of 1.0
-    base_radius = 0.08
     tubes = []
+    length = 1.0
 
     z_vec = App.Vector(0, 0, 1)
 
-    for p_start, p_end in lines_2d:
-        vec = p_end - p_start
-        seg_length = vec.Length
-        if seg_length > 1e-5:
-            cyl = Part.makeCylinder(base_radius, seg_length)
+    for char in l_string:
+        if char == 'F' or char == 'f':
+            current_dir = rot.multVec(App.Vector(0, 1, 0)) # Grow along Y axis
+            end_pos = pos + current_dir * length
 
-            # Rotate cylinder to point along the segment
-            vec_dir = vec.normalize()
-            if z_vec.dot(vec_dir) < -0.9999:
-                rot = App.Rotation(App.Vector(1, 0, 0), 180)
-            else:
-                rot = App.Rotation(z_vec, vec_dir)
+            if char == 'F':
+                vec = end_pos - pos
+                if vec.Length > 1e-5:
+                    cyl = Part.makeCylinder(base_radius, vec.Length)
+                    vec_dir = vec.normalize()
+                    if z_vec.dot(vec_dir) < -0.9999:
+                        align_rot = App.Rotation(App.Vector(1, 0, 0), 180)
+                    else:
+                        align_rot = App.Rotation(z_vec, vec_dir)
+                    cyl.Placement = App.Placement(pos, align_rot)
+                    tubes.append(cyl)
+            pos = end_pos
 
-            cyl.Placement = App.Placement(p_start, rot)
-            tubes.append(cyl)
+        elif char == '+': rot = rot.multiply(App.Rotation(App.Vector(0, 0, 1), angle_deg))  # Yaw Right
+        elif char == '-': rot = rot.multiply(App.Rotation(App.Vector(0, 0, 1), -angle_deg)) # Yaw Left
+        elif char == '^': rot = rot.multiply(App.Rotation(App.Vector(1, 0, 0), angle_deg))  # Pitch Up
+        elif char == '&': rot = rot.multiply(App.Rotation(App.Vector(1, 0, 0), -angle_deg)) # Pitch Down
+        elif char == '\\': rot = rot.multiply(App.Rotation(App.Vector(0, 1, 0), angle_deg)) # Roll Right
+        elif char == '/': rot = rot.multiply(App.Rotation(App.Vector(0, 1, 0), -angle_deg)) # Roll Left
 
-    # Group all tubes into a single shape
+        elif char == '[': stack.append((App.Vector(pos), App.Rotation(rot)))
+        elif char == ']':
+            if stack:
+                pos, rot = stack.pop()
+
+    if not tubes:
+        App.Console.PrintWarning("Warning: No geometry generated by these rules.\n")
+        return
+
     solid_compound = Part.makeCompound(tubes)
 
     # 5. Scale to perfectly bridge the gap
-    max_y = max([max(p1.y, p2.y) for p1, p2 in lines_2d])
+    bbox = solid_compound.BoundBox
+    max_y = bbox.YMax - bbox.YMin
     scale_factor = gap_distance / max_y if max_y > 1e-5 else 1.0
 
     scale_mat = App.Matrix()
@@ -151,16 +144,115 @@ def generate_solid_fern():
         x_dir.z, y_dir.z, z_dir.z, p1.z,
         0.0,     0.0,     0.0,     1.0
     )
-
     solid_compound.Placement = App.Placement(mat)
 
     # 7. Render in FreeCAD
-    fern_obj = doc.addObject("Part::Feature", "OrganicFern_Solid")
-    fern_obj.Shape = solid_compound
-    fern_obj.ViewObject.ShapeColor = (0.2, 0.6, 0.3)
-    
-    doc.recompute()
-    App.Console.PrintMessage(f"Generated solid fern bridging a {gap_distance:.2f}mm gap!\n")
+    growth_obj = doc.addObject("Part::Feature", "Bridging_Growth")
+    growth_obj.Shape = solid_compound
+    growth_obj.ViewObject.ShapeColor = (0.2, 0.6, 0.3)
 
-if __name__ == "__main__":
-    generate_solid_fern()
+    doc.recompute()
+    App.Console.PrintMessage(f"Generated growth bridging a {gap_distance:.2f}mm gap!\n")
+
+
+# ==========================================
+# GUI LOGIC (Native Task Panel)
+# ==========================================
+
+class SmartGrowthTaskPanel:
+    def __init__(self):
+        self.form = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(self.form)
+
+        instruction_text = (
+            "<b>1.</b> Ctrl+Click exactly 2 parallel edges.<br>"
+            "<b>2.</b> Select an algorithm or type rules.<br>"
+            "<b>3.</b> Click Generate to bridge the gap."
+        )
+        layout.addWidget(QtWidgets.QLabel(instruction_text))
+
+        form_layout = QtWidgets.QFormLayout()
+
+        # Presets
+        self.preset_cb = QtWidgets.QComboBox()
+        self.presets = {
+            "2D Fern": {"axiom": "X", "rules": "X=F+[[X]-X]-F[-FX]+X; F=FF", "angle": 25.0, "gen": 5},
+            "3D Fern (Spiral)": {"axiom": "X", "rules": "X=F+\\[[X]-X]-F[-FX]+X; F=FF", "angle": 25.0, "gen": 5},
+            "3D Fractal Tree": {"axiom": "X", "rules": "X=F[+X][^X][-X][&X]; F=FF", "angle": 25.0, "gen": 4},
+            "Dragon Curve": {"axiom": "FX", "rules": "X=X+YF+; Y=-FX-Y", "angle": 90.0, "gen": 8},
+            "Sierpinski Arrow": {"axiom": "YF", "rules": "X=YF+XF+Y; Y=XF-YF-X", "angle": 60.0, "gen": 5},
+            "Koch Snowflake": {"axiom": "F++F++F", "rules": "F=F-F++F-F", "angle": 60.0, "gen": 3}
+        }
+        self.preset_cb.addItems(self.presets.keys())
+        self.preset_cb.currentIndexChanged.connect(self.load_preset)
+        form_layout.addRow("Algorithm:", self.preset_cb)
+
+        # Axiom
+        self.axiom_input = QtWidgets.QLineEdit()
+        form_layout.addRow("Start (Axiom):", self.axiom_input)
+
+        # Rules
+        self.rules_input = QtWidgets.QLineEdit()
+        form_layout.addRow("Rules:", self.rules_input)
+
+        # Generations
+        self.gen_spin = QtWidgets.QSpinBox()
+        self.gen_spin.setRange(1, 10)
+        form_layout.addRow("Complexity (Gen):", self.gen_spin)
+
+        # Angle
+        self.angle_spin = QtWidgets.QDoubleSpinBox()
+        self.angle_spin.setRange(0.0, 360.0)
+        self.angle_spin.setSuffix(" °")
+        form_layout.addRow("Branch Angle:", self.angle_spin)
+
+        # Tube Radius
+        self.radius_spin = QtWidgets.QDoubleSpinBox()
+        self.radius_spin.setRange(0.01, 1.0)
+        self.radius_spin.setSingleStep(0.01)
+        self.radius_spin.setValue(0.08)
+        self.radius_spin.setToolTip("Thickness relative to branch length. Larger = chunkier.")
+        form_layout.addRow("Tube Thickness:", self.radius_spin)
+
+        layout.addLayout(form_layout)
+
+        # Generate Button
+        self.btn_gen = QtWidgets.QPushButton("Bridge Edges")
+        self.btn_gen.setStyleSheet("font-weight: bold; padding: 10px; margin-top: 10px;")
+        self.btn_gen.clicked.connect(self.execute_growth)
+        layout.addWidget(self.btn_gen)
+
+        layout.addStretch()
+        self.load_preset()
+
+    def load_preset(self):
+        preset_name = self.preset_cb.currentText()
+        data = self.presets[preset_name]
+        self.axiom_input.setText(data["axiom"])
+        self.rules_input.setText(data["rules"])
+        self.angle_spin.setValue(data["angle"])
+        self.gen_spin.setValue(data["gen"])
+
+    def execute_growth(self):
+        generate_bridging_geometry(
+            self.axiom_input.text(),
+            self.rules_input.text(),
+            self.gen_spin.value(),
+            self.angle_spin.value(),
+            self.radius_spin.value()
+        )
+        # We do NOT close the dialog here, so you can rapidly test different
+        # algorithms, angles, and thicknesses without re-opening the macro.
+
+    def getStandardButtons(self):
+        return QtWidgets.QDialogButtonBox.Close.value
+
+    def reject(self):
+        Gui.Control.closeDialog()
+
+
+if Gui.Control.activeDialog():
+    Gui.Control.closeDialog()
+
+panel = SmartGrowthTaskPanel()
+Gui.Control.showDialog(panel)
