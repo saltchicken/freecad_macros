@@ -43,28 +43,6 @@ def with_undo(transaction_name="Macro Operation"):
     return decorator
 
 
-def get_single_sketch(doc):
-    """Safely retrieves and validates a single sketch selection."""
-    selection = Gui.Selection.getSelection()
-    if selection:
-        base_obj = selection[0]
-    elif doc.ActiveObject:
-        base_obj = doc.ActiveObject
-        App.Console.PrintWarning(
-            f"Warning: Nothing selected. Guessing '{base_obj.Name}'.\n")
-    else:
-        App.Console.PrintError(
-            "Error: Please select a Sketch in the Tree View first!\n")
-        return None
-
-    if not hasattr(base_obj,
-                   "TypeId") or "Sketcher::SketchObject" not in base_obj.TypeId:
-        App.Console.PrintError("Error: The selected object must be a Sketch.\n")
-        return None
-
-    return base_obj
-
-
 def get_active_body(base_obj=None):
     """Finds the active PartDesign Body, falling back to the base object's parent."""
     active_body = None
