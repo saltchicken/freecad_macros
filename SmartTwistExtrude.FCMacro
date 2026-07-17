@@ -13,7 +13,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 @MacroShared.with_undo("Smart Twist Extrude")
-def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0"):
+def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", sketches_only=False):
     doc = App.ActiveDocument
     if doc is None: return
 
@@ -122,18 +122,22 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
         created_sketches.append(new_sketch)
 
     # 5. Loft Generation
-    loft_label = f"SmartLoft_{profile_obj.Label}"
-    objects_to_hide = created_sketches + [profile_obj]
-    if is_path_mode and path_obj:
-        objects_to_hide.append(path_obj)
+    if not sketches_only:
+        loft_label = f"SmartLoft_{profile_obj.Label}"
+        objects_to_hide = created_sketches + [profile_obj]
+        if is_path_mode and path_obj:
+            objects_to_hide.append(path_obj)
 
-    MacroShared.build_additive_loft(
-        active_body, loft_label, created_sketches[0], created_sketches[1:], objects_to_hide
-    )
+        MacroShared.build_additive_loft(
+            active_body, loft_label, created_sketches[0], created_sketches[1:], objects_to_hide
+        )
+        
+        mode_text = "Path Sweep" if is_path_mode else "Straight Extrude"
+        App.Console.PrintMessage(f"Successfully generated {mode_text} Loft!\n")
+    else:
+        App.Console.PrintMessage(f"Successfully generated {num_sections} sketch layers (Loft skipped).\n")
 
     doc.recompute()
-    mode_text = "Path Sweep" if is_path_mode else "Straight Extrude"
-    App.Console.PrintMessage(f"Successfully generated {mode_text} Loft!\n")
 
 
 # ==========================================
@@ -143,7 +147,7 @@ class SmartTwistDialog(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Smart Twist Generator")
-        self.resize(400, 320)
+        self.resize(400, 360)  # slightly taller to accommodate the new checkbox
 
         layout = QtWidgets.QVBoxLayout(self)
         instruction_text = (
@@ -181,6 +185,12 @@ class SmartTwistDialog(QtWidgets.QDialog):
         self.equation_input.setText("1.0 + sin(t * pi) * 0.5")
         form_layout.addRow("Scale Formula 'f(t)':", self.equation_input)
 
+        # Sketches Only Toggle
+        self.sketches_only_cb = QtWidgets.QCheckBox("Generate Sketches Only (Skip Loft)")
+        self.sketches_only_cb.setChecked(False)
+        self.sketches_only_cb.setToolTip("If checked, the macro will generate the scaled/rotated sketches but will not create an Additive Loft.")
+        form_layout.addRow("", self.sketches_only_cb)
+
         layout.addLayout(form_layout)
 
         self.btn_gen = QtWidgets.QPushButton("Generate")
@@ -193,7 +203,8 @@ class SmartTwistDialog(QtWidgets.QDialog):
             self.height_spin.value(), 
             self.angle_spin.value(), 
             self.sections_spin.value(), 
-            self.equation_input.text()
+            self.equation_input.text(),
+            self.sketches_only_cb.isChecked()
         )
         self.accept()
 
