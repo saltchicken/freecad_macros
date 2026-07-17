@@ -4,6 +4,7 @@ import Part
 import Draft
 import math
 from PySide6 import QtWidgets
+from PySide6.QtCore import Qt
 import importlib
 
 from SharedLib import MacroShared
@@ -180,21 +181,27 @@ class SmartTwistDialog(QtWidgets.QDialog):
         self.sections_spin.setValue(24)
         form_layout.addRow("Number of Sections:", self.sections_spin)
 
-        # Equation (Editable Dropdown with Presets)
+        # Equation (Editable Dropdown with Tooltipped Presets)
         self.equation_input = QtWidgets.QComboBox()
         self.equation_input.setEditable(True)
         
-        # Define the presets
+        # Define the presets as tuples of (formula, tooltip description)
         presets = [
-            "1.0 + cos(t * 2 * pi) * 0.5",  # 1 Wave (Fat -> Skinny -> Fat)
-            "1.0 + cos(t * 4 * pi) * 0.5",  # 2 Waves
-            "1.0 + sin(t * pi) * 0.5",      # Middle Bulge (Skinny -> Fat -> Skinny)
-            "1.0 - sin(t * pi) * 0.5",      # Middle Pinch
-            "1.0 + (t * 0.5)",              # Linear Cone Flare
-            "1.0"                           # No Scale
+            ("1.0 + cos(t * 2 * pi) * 0.5", "1 Wave: Fat at start, skinny in middle, fat at end"),
+            ("1.0 + cos(t * 4 * pi) * 0.5", "2 Waves: Creates two skinny pinch points"),
+            ("1.0 + sin(t * pi) * 0.5",     "Middle Bulge: Skinny at start/end, fat in middle"),
+            ("1.0 - sin(t * pi) * 0.5",     "Middle Pinch: Fat at start/end, skinny in middle"),
+            ("1.0 + (t * 0.5)",             "Linear Flare: Gradually gets wider towards the end"),
+            ("1.0",                         "No Scale: Straight extrusion")
         ]
-        self.equation_input.addItems(presets)
-        self.equation_input.setToolTip("Select a preset or type a custom math formula.")
+        
+        # Add items and their respective tooltips
+        for index, (formula, tooltip) in enumerate(presets):
+            self.equation_input.addItem(formula)
+            self.equation_input.setItemData(index, tooltip, Qt.ToolTipRole)
+
+        # The main tooltip for the widget itself (when not hovering an item)
+        self.equation_input.setToolTip("Select a preset, hover for details, or type custom math.")
         form_layout.addRow("Scale Formula 'f(t)':", self.equation_input)
 
         # Sketches Only Toggle
