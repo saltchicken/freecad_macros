@@ -132,7 +132,7 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
         MacroShared.build_additive_loft(
             active_body, loft_label, created_sketches[0], created_sketches[1:], objects_to_hide
         )
-        
+
         mode_text = "Path Sweep" if is_path_mode else "Straight Extrude"
         App.Console.PrintMessage(f"Successfully generated {mode_text} Loft!\n")
     else:
@@ -142,15 +142,14 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
 
 
 # ==========================================
-# GUI LOGIC
+# GUI LOGIC (Native Task Panel)
 # ==========================================
-class SmartTwistDialog(QtWidgets.QDialog):
+class SmartTwistTaskPanel:
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Smart Twist Generator")
-        self.resize(400, 360)
+        # The 'form' attribute is required by FreeCAD's Task Panel system
+        self.form = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(self.form)
 
-        layout = QtWidgets.QVBoxLayout(self)
         instruction_text = (
             "<b>1.</b> Select Profile Sketch.<br>"
             "<b>2.</b> (Optional) Ctrl+click Path Sketch.<br>"
@@ -160,13 +159,13 @@ class SmartTwistDialog(QtWidgets.QDialog):
 
         form_layout = QtWidgets.QFormLayout()
 
-        # Height (Note added for clarity)
+        # Height
         self.height_spin = QtWidgets.QDoubleSpinBox()
         self.height_spin.setRange(0.1, 10000.0)
         self.height_spin.setValue(100.0)
         self.height_spin.setSuffix(" mm")
         self.height_spin.setToolTip("Ignored if a Path sketch is selected.")
-        form_layout.addRow("Total Height (Straight only):", self.height_spin)
+        form_layout.addRow("Total Height:", self.height_spin)
 
         # Twist Angle
         self.angle_spin = QtWidgets.QDoubleSpinBox()
@@ -184,8 +183,7 @@ class SmartTwistDialog(QtWidgets.QDialog):
         # Equation (Editable Dropdown with Tooltipped Presets)
         self.equation_input = QtWidgets.QComboBox()
         self.equation_input.setEditable(True)
-        
-        # Define the presets as tuples of (formula, tooltip description)
+
         presets = [
             ("1.0 + cos(t * 2 * pi) * 0.5", "1 Wave: Fat at start, skinny in middle, fat at end"),
             ("1.0 + cos(t * 4 * pi) * 0.5", "2 Waves: Creates two skinny pinch points"),
@@ -194,39 +192,54 @@ class SmartTwistDialog(QtWidgets.QDialog):
             ("1.0 + (t * 0.5)",             "Linear Flare: Gradually gets wider towards the end"),
             ("1.0",                         "No Scale: Straight extrusion")
         ]
-        
-        # Add items and their respective tooltips
+
         for index, (formula, tooltip) in enumerate(presets):
             self.equation_input.addItem(formula)
             self.equation_input.setItemData(index, tooltip, Qt.ToolTipRole)
 
-        # The main tooltip for the widget itself (when not hovering an item)
         self.equation_input.setToolTip("Select a preset, hover for details, or type custom math.")
-        form_layout.addRow("Scale Formula 'f(t)':", self.equation_input)
+        form_layout.addRow("Scale Formula:", self.equation_input)
 
         # Sketches Only Toggle
         self.sketches_only_cb = QtWidgets.QCheckBox("Generate Sketches Only (Skip Loft)")
         self.sketches_only_cb.setChecked(False)
-        self.sketches_only_cb.setToolTip("If checked, the macro will generate the scaled/rotated sketches but will not create an Additive Loft.")
+        self.sketches_only_cb.setToolTip("Generates scaled/rotated sketches without the Additive Loft.")
         form_layout.addRow("", self.sketches_only_cb)
 
         layout.addLayout(form_layout)
 
+        # Action Button
         self.btn_gen = QtWidgets.QPushButton("Generate")
         self.btn_gen.setStyleSheet("font-weight: bold; padding: 10px;")
         self.btn_gen.clicked.connect(self.generate)
         layout.addWidget(self.btn_gen)
 
+        # Pushes everything to the top of the panel
+        layout.addStretch()
+
     def generate(self):
         generate_smart_twist(
-            self.height_spin.value(), 
-            self.angle_spin.value(), 
-            self.sections_spin.value(), 
+            self.height_spin.value(),
+            self.angle_spin.value(),
+            self.sections_spin.value(),
             self.equation_input.currentText(),
             self.sketches_only_cb.isChecked()
         )
-        self.accept()
+        # Note: We removed the close command here so the panel stays open
+        # for rapid iteration and tweaking.
 
-# Launch
-dialog = SmartTwistDialog()
-dialog.show()
+    # --- FreeCAD Task Panel Required Methods ---
+    def getStandardButtons(self):
+        return QtWidgets.QDialogButtonBox.Close.value
+
+    def reject(self):
+        # Called when the user clicks the Close button
+        Gui.Control.closeDialog()
+
+# 1. Close active dialogs to prevent overlaps
+if Gui.Control.activeDialog():
+    Gui.Control.closeDialog()
+
+# 2. Launch natively in the Tasks tab
+panel = SmartTwistTaskPanel()
+Gui.Control.showDialog(panel)
