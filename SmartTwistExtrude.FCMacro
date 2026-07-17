@@ -147,7 +147,7 @@ class SmartTwistDialog(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Smart Twist Generator")
-        self.resize(400, 360)  # slightly taller to accommodate the new checkbox
+        self.resize(400, 360)
 
         layout = QtWidgets.QVBoxLayout(self)
         instruction_text = (
@@ -180,9 +180,21 @@ class SmartTwistDialog(QtWidgets.QDialog):
         self.sections_spin.setValue(24)
         form_layout.addRow("Number of Sections:", self.sections_spin)
 
-        # Equation
-        self.equation_input = QtWidgets.QLineEdit()
-        self.equation_input.setText("1.0 + sin(t * pi) * 0.5")
+        # Equation (Editable Dropdown with Presets)
+        self.equation_input = QtWidgets.QComboBox()
+        self.equation_input.setEditable(True)
+        
+        # Define the presets
+        presets = [
+            "1.0 + cos(t * 2 * pi) * 0.5",  # 1 Wave (Fat -> Skinny -> Fat)
+            "1.0 + cos(t * 4 * pi) * 0.5",  # 2 Waves
+            "1.0 + sin(t * pi) * 0.5",      # Middle Bulge (Skinny -> Fat -> Skinny)
+            "1.0 - sin(t * pi) * 0.5",      # Middle Pinch
+            "1.0 + (t * 0.5)",              # Linear Cone Flare
+            "1.0"                           # No Scale
+        ]
+        self.equation_input.addItems(presets)
+        self.equation_input.setToolTip("Select a preset or type a custom math formula.")
         form_layout.addRow("Scale Formula 'f(t)':", self.equation_input)
 
         # Sketches Only Toggle
@@ -203,7 +215,7 @@ class SmartTwistDialog(QtWidgets.QDialog):
             self.height_spin.value(), 
             self.angle_spin.value(), 
             self.sections_spin.value(), 
-            self.equation_input.text(),
+            self.equation_input.currentText(),
             self.sketches_only_cb.isChecked()
         )
         self.accept()
