@@ -1,0 +1,166 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+import importlib
+
+from SharedLib import MacroShared
+importlib.reload(MacroShared)
+
+def parse_rules(rule_str):
+    rules = {}
+    for rule in rule_str.split(';'):
+        if '=' in rule:
+            key, val = rule.split('=', 1)
+            rules[key.strip()] = val.strip()
+    return rules
+
+def expand_l_system(axiom, rules, generations):
+    current = axiom
+    for _ in range(generations):
+        next_str = []
+        for char in current:
+            next_str.append(rules.get(char, char))
+        current = "".join(next_str)
+    return current
+
+@MacroShared.with_undo("Smart Fern Solid")
+def generate_solid_fern():
+    doc = App.ActiveDocument
+    if not doc:
+        App.Console.PrintError("Error: No active document.\n")
+        return
+
+    # 1. Selection & Validation
+    sel_ex = Gui.Selection.getSelectionEx()
+
+    edges = []
+    for sel_obj in sel_ex:
+        for sub_obj in sel_obj.SubObjects:
+            if hasattr(sub_obj, "ShapeType") and sub_obj.ShapeType == "Edge":
+                edges.append(sub_obj)
+
+    if len(edges) != 2:
+        App.Console.PrintError(f"Error: Found {len(edges)} edge(s). Please Ctrl+Click exactly two edges.\n")
+        return
+
+    edge1 = edges[0]
+    edge2 = edges[1]
+
+    # 2. Calculate the Plane Math
+    p1 = edge1.CenterOfMass
+    p2 = edge2.CenterOfMass
+
+    e1_vec = edge1.Vertexes[-1].Point - edge1.Vertexes[0].Point
+    e2_vec = edge2.Vertexes[-1].Point - edge2.Vertexes[0].Point
+
+    if e1_vec.Length < 1e-4 or e2_vec.Length < 1e-4:
+        return
+
+    e1_dir = e1_vec.normalize()
+    e2_dir = e2_vec.normalize()
+
+    if abs(e1_dir.dot(e2_dir)) < 0.98:
+        App.Console.PrintError("Error: The selected edges do not appear to be parallel.\n")
+        return
+
+    x_dir = e1_dir
+    bridge_vec = p2 - p1
+    z_dir = x_dir.cross(bridge_vec).normalize()
+    y_dir = z_dir.cross(x_dir).normalize()
+
+    gap_distance = bridge_vec.dot(y_dir)
+
+    if gap_distance < 1e-4:
+        App.Console.PrintError("Error: Edges are overlapping or too close.\n")
+        return
+
+    # 3. 2D L-System Math (XY Plane)
+    axiom = "X"
+    rule_str = "X=F+[[X]-X]-F[-FX]+X; F=FF"
+    generations = 5
+    angle_deg = 25.0
+
+    rules = parse_rules(rule_str)
+    l_string = expand_l_system(axiom, rules, generations)
+
+    pos_x, pos_y = 0.0, 0.0
+    angle = 90.0
+    stack = []
+
+    # We will store lines to calculate the bounding box later
+    lines_2d = []
+    length = 1.0
+
+    for char in l_string:
+        if char == 'F':
+            rad = math.radians(angle)
+            nx = pos_x + math.cos(rad) * length
+            ny = pos_y + math.sin(rad) * length
+            lines_2d.append((App.Vector(pos_x, pos_y, 0), App.Vector(nx, ny, 0)))
+            pos_x, pos_y = nx, ny
+
+        elif char == '+': angle += angle_deg
+        elif char == '-': angle -= angle_deg
+        elif char == '[': stack.append((pos_x, pos_y, angle))
+        elif char == ']':
+            if stack:
+                pos_x, pos_y, angle = stack.pop()
+
+    if not lines_2d:
+        return
+
+    # 4. Generate 3D Solid Tubes
+    # Radius relative to the unit length of 1.0
+    base_radius = 0.08
+    tubes = []
+
+    z_vec = App.Vector(0, 0, 1)
+
+    for p_start, p_end in lines_2d:
+        vec = p_end - p_start
+        seg_length = vec.Length
+        if seg_length > 1e-5:
+            cyl = Part.makeCylinder(base_radius, seg_length)
+
+            # Rotate cylinder to point along the segment
+            vec_dir = vec.normalize()
+            if z_vec.dot(vec_dir) < -0.9999:
+                rot = App.Rotation(App.Vector(1, 0, 0), 180)
+            else:
+                rot = App.Rotation(z_vec, vec_dir)
+
+            cyl.Placement = App.Placement(p_start, rot)
+            tubes.append(cyl)
+
+    # Group all tubes into a single shape
+    solid_compound = Part.makeCompound(tubes)
+
+    # 5. Scale to perfectly bridge the gap
+    max_y = max([max(p1.y, p2.y) for p1, p2 in lines_2d])
+    scale_factor = gap_distance / max_y if max_y > 1e-5 else 1.0
+
+    scale_mat = App.Matrix()
+    scale_mat.scale(scale_factor, scale_factor, scale_factor)
+    solid_compound.transformShape(scale_mat)
+
+    # 6. Align and Place Geometry in 3D Space
+    mat = App.Matrix(
+        x_dir.x, y_dir.x, z_dir.x, p1.x,
+        x_dir.y, y_dir.y, z_dir.y, p1.y,
+        x_dir.z, y_dir.z, z_dir.z, p1.z,
+        0.0,     0.0,     0.0,     1.0
+    )
+
+    solid_compound.Placement = App.Placement(mat)
+
+    # 7. Render in FreeCAD
+    fern_obj = doc.addObject("Part::Feature", "OrganicFern_Solid")
+    fern_obj.Shape = solid_compound
+    fern_obj.ViewObject.ShapeColor = (0.2, 0.6, 0.3)
+    
+    doc.recompute()
+    App.Console.PrintMessage(f"Generated solid fern bridging a {gap_distance:.2f}mm gap!\n")
+
+if __name__ == "__main__":
+    generate_solid_fern()
