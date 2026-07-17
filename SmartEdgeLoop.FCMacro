@@ -142,17 +142,14 @@ def select_smart_loop(angle_tolerance=45.0):
 
 
 # ==========================================
-# GUI LOGIC
+# GUI LOGIC (Native Task Panel)
 # ==========================================
 
-class SmartEdgeLoopDialog(QtWidgets.QDialog):
+class SmartEdgeLoopTaskPanel:
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Smart Edge Loop")
-        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
-        self.resize(300, 150)
-
-        layout = QtWidgets.QVBoxLayout(self)
+        # The 'form' attribute is required by FreeCAD's Task Panel system
+        self.form = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(self.form)
 
         instruction_text = (
             "<b>1.</b> Select a single edge.<br>"
@@ -169,7 +166,7 @@ class SmartEdgeLoopDialog(QtWidgets.QDialog):
         self.tolerance_spin.setValue(45.0)
         self.tolerance_spin.setSuffix(" °")
         self.tolerance_spin.setToolTip("Maximum angle deviation allowed for a continuous curve.\n0° = perfectly smooth, 90° = allows sharp corners.")
-        form_layout.addRow("Max Deviation Angle:", self.tolerance_spin)
+        form_layout.addRow("Max Angle:", self.tolerance_spin)
 
         layout.addLayout(form_layout)
 
@@ -179,15 +176,30 @@ class SmartEdgeLoopDialog(QtWidgets.QDialog):
         self.btn_select.clicked.connect(self.execute_selection)
         layout.addWidget(self.btn_select)
 
+        # Pushes elements to the top
+        layout.addStretch()
+
     def execute_selection(self):
         tolerance = self.tolerance_spin.value()
         select_smart_loop(tolerance)
 
-# Launch (Floating / Non-Modal)
-# Storing globally to prevent garbage collection
-global smart_loop_dialog
-smart_loop_dialog = SmartEdgeLoopDialog()
-smart_loop_dialog.show()
+    # --- FreeCAD Task Panel Required Methods ---
 
-# Automatically run the selection algorithm as soon as the macro launches
-smart_loop_dialog.execute_selection()
+    def getStandardButtons(self):
+        return QtWidgets.QDialogButtonBox.Close.value
+
+    def reject(self):
+        # This is called when the user clicks the Close button
+        Gui.Control.closeDialog()
+
+
+# 1. Check if a task panel is already active to prevent errors
+if Gui.Control.activeDialog():
+    Gui.Control.closeDialog()
+
+# 2. Launch it natively in the Tasks tab
+panel = SmartEdgeLoopTaskPanel()
+Gui.Control.showDialog(panel)
+
+# 3. Automatically run the selection algorithm on launch
+panel.execute_selection()
