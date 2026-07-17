@@ -1,6 +1,12 @@
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
+import math
+from PySide6 import QtWidgets, QtCore
+
+# ==========================================
+# CORE LOGIC
+# ==========================================
 
 def get_vertex_key(vertex, tolerance=4):
     """Rounds vertex coordinates to create a reliable dictionary key."""
@@ -9,33 +15,26 @@ def get_vertex_key(vertex, tolerance=4):
             round(vertex.Point.z, tolerance))
 
 def get_outward_tangent(edge, vertex_point):
-    """
-    Calculates the tangent vector of an edge at a specific vertex,
-    oriented pointing *away* from the vertex.
-    """
+    """Calculates the tangent vector of an edge pointing *away* from the vertex."""
     try:
         v_start = edge.Vertexes[0].Point
         v_end = edge.Vertexes[-1].Point
 
-        # If vertex is the start of the edge, tangent inherently points inward/along the edge
         if (v_start - vertex_point).Length < 1e-4:
             param = edge.ParameterRange[0]
             return edge.tangentAt(param).normalize()
 
-        # If vertex is the end, tangent points outward, so we reverse it to point "into" the edge
-        # Wait, we want it pointing AWAY from the vertex.
-        # Start vertex tangent points away. End vertex tangent points toward.
         elif (v_end - vertex_point).Length < 1e-4:
             param = edge.ParameterRange[1]
             vec = edge.tangentAt(param).normalize()
             return vec.multiply(-1.0)
 
-    except Exception as e:
+    except Exception:
         return None
     return None
 
-def find_best_continuation(current_edge, current_edge_name, vertex_point, connected_edges, angle_tolerance=45.0):
-    """Finds the smoothest connecting edge at a junction."""
+def find_best_continuation(current_edge, current_edge_name, vertex_point, connected_edges, angle_tolerance):
+    """Finds the smoothest connecting edge at a junction within the tolerance."""
     if not connected_edges:
         return None
 
@@ -55,15 +54,11 @@ def find_best_continuation(current_edge, current_edge_name, vertex_point, connec
         if not next_tangent:
             continue
 
-        # We want the vectors to be pointing in opposite directions from the shared vertex
-        # to form a straight line, so we measure the angle between them.
-        # A perfectly smooth continuation has an angle of 180 degrees between outward tangents.
         dot_prod = current_tangent.dot(next_tangent)
         dot_prod = max(-1.0, min(1.0, dot_prod)) # Clamp for floating point errors
 
-        import math
         angle = math.degrees(math.acos(dot_prod))
-        deviation = abs(180.0 - angle) # 0 deviation = perfect G1 continuity
+        deviation = abs(180.0 - angle)
 
         if deviation < min_angle and deviation <= angle_tolerance:
             min_angle = deviation
@@ -72,29 +67,27 @@ def find_best_continuation(current_edge, current_edge_name, vertex_point, connec
 
     return (best_edge_name, best_edge) if best_edge else None
 
-def select_smart_loop():
+def select_smart_loop(angle_tolerance=45.0):
     sel_ex = Gui.Selection.getSelectionEx()
     if not sel_ex:
-        App.Console.PrintError("SmartLoop: Select at least one edge first.\n")
+        App.Console.PrintError("SmartLoop: Select an edge first.\n")
         return
 
+    # Always use the first selected element as the seed
     sel_object = sel_ex[0]
     obj = sel_object.Object
     sub_names = sel_object.SubElementNames
 
     if not sub_names or not sub_names[0].startswith("Edge"):
-        App.Console.PrintError("SmartLoop: The selected element must be an Edge.\n")
+        App.Console.PrintError("SmartLoop: The seed element must be an Edge.\n")
         return
 
     start_edge_name = sub_names[0]
     shape = obj.Shape
 
-    # 1. Map all edges to their vertices
-    # Dictionary format: { vertex_key: [(edge_name, edge_object), ...] }
+    # Map edges to vertices
     vertex_map = {}
-    edges = shape.Edges
-
-    for i, edge in enumerate(edges):
+    for i, edge in enumerate(shape.Edges):
         edge_name = f"Edge{i+1}"
         for vertex in edge.Vertexes:
             v_key = get_vertex_key(vertex)
@@ -103,7 +96,7 @@ def select_smart_loop():
             vertex_map[v_key].append((edge_name, edge))
 
     start_edge = None
-    for name, edge in vertex_map[get_vertex_key(shape.getElement(start_edge_name).Vertexes[0])]:
+    for name, edge in vertex_map.get(get_vertex_key(shape.getElement(start_edge_name).Vertexes[0]), []):
         if name == start_edge_name:
             start_edge = edge
             break
@@ -111,7 +104,7 @@ def select_smart_loop():
     if not start_edge:
         return
 
-    # 2. Traverse the loop in both directions
+    # Traverse loop
     loop_edge_names = set([start_edge_name])
     endpoints = [start_edge.Vertexes[0], start_edge.Vertexes[-1]]
 
@@ -124,34 +117,77 @@ def select_smart_loop():
             v_key = get_vertex_key(current_vertex)
             connected = vertex_map.get(v_key, [])
 
-            # Remove already visited edges from consideration to prevent infinite loops
             candidates = [e for e in connected if e[0] not in loop_edge_names]
-
             if not candidates:
-                break # Dead end or loop closed
+                break
 
-            best_match = find_best_continuation(current_edge, current_edge_name, current_vertex.Point, candidates)
-
+            best_match = find_best_continuation(current_edge, current_edge_name, current_vertex.Point, candidates, angle_tolerance)
             if not best_match:
-                break # Corner was too sharp based on angle_tolerance
+                break
 
             next_edge_name, next_edge = best_match
             loop_edge_names.add(next_edge_name)
 
-            # Move to the next vertex
             v0_key = get_vertex_key(next_edge.Vertexes[0])
-            v1_key = get_vertex_key(next_edge.Vertexes[-1])
-
             current_vertex = next_edge.Vertexes[1] if v0_key == v_key and len(next_edge.Vertexes) > 1 else next_edge.Vertexes[0]
             current_edge = next_edge
             current_edge_name = next_edge_name
 
-    # 3. Apply the selection to the GUI
+    # Apply selection
     Gui.Selection.clearSelection()
     for edge_name in loop_edge_names:
         Gui.Selection.addSelection(obj, edge_name)
 
-    App.Console.PrintMessage(f"SmartLoop: Selected {len(loop_edge_names)} connected edges.\n")
+    App.Console.PrintMessage(f"SmartLoop: Selected {len(loop_edge_names)} edges at <= {angle_tolerance}° tolerance.\n")
 
-# Run the tool
-select_smart_loop()
+
+# ==========================================
+# GUI LOGIC
+# ==========================================
+
+class SmartEdgeLoopDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Smart Edge Loop")
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        self.resize(300, 150)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        instruction_text = (
+            "<b>1.</b> Select a single edge.<br>"
+            "<b>2.</b> Adjust tangency tolerance.<br>"
+            "<b>3.</b> Click Select Loop to recalculate."
+        )
+        layout.addWidget(QtWidgets.QLabel(instruction_text))
+
+        form_layout = QtWidgets.QFormLayout()
+
+        # Tolerance Spinbox
+        self.tolerance_spin = QtWidgets.QDoubleSpinBox()
+        self.tolerance_spin.setRange(0.0, 180.0)
+        self.tolerance_spin.setValue(45.0)
+        self.tolerance_spin.setSuffix(" °")
+        self.tolerance_spin.setToolTip("Maximum angle deviation allowed for a continuous curve.\n0° = perfectly smooth, 90° = allows sharp corners.")
+        form_layout.addRow("Max Deviation Angle:", self.tolerance_spin)
+
+        layout.addLayout(form_layout)
+
+        # Action Button
+        self.btn_select = QtWidgets.QPushButton("Select Loop")
+        self.btn_select.setStyleSheet("font-weight: bold; padding: 8px;")
+        self.btn_select.clicked.connect(self.execute_selection)
+        layout.addWidget(self.btn_select)
+
+    def execute_selection(self):
+        tolerance = self.tolerance_spin.value()
+        select_smart_loop(tolerance)
+
+# Launch (Floating / Non-Modal)
+# Storing globally to prevent garbage collection
+global smart_loop_dialog
+smart_loop_dialog = SmartEdgeLoopDialog()
+smart_loop_dialog.show()
+
+# Automatically run the selection algorithm as soon as the macro launches
+smart_loop_dialog.execute_selection()
