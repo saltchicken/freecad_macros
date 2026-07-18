@@ -13,17 +13,11 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 
-@MacroShared.with_undo("Hex Pattern")
-def generate_hex_pattern(target_obj, tile_radius=5.0, gap=0.5, mode="cut"):
+def calculate_hex_shape(target_obj, tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0):
     """
-    Breaks a target object into hexagonal panels or a lattice.
-    mode: "cut" (subtracts pillars to make a lattice) or "common" (keeps panels)
+    Calculates and returns the resulting Shape of a hex pattern applied to target_obj.
+    No document side-effects occur here.
     """
-    if target_obj is None or not hasattr(target_obj, "Shape"):
-        App.Console.PrintError("Error: Invalid object selected.\n")
-        return
-
-    # 1. Get the bounding box of the target
     bbox = target_obj.Shape.BoundBox
     step_radius = tile_radius + gap
     
@@ -37,17 +31,18 @@ def generate_hex_pattern(target_obj, tile_radius=5.0, gap=0.5, mode="cut"):
     
     hex_faces = []
     
-    # 2. Generate the 2D grid
-    for c in range(-1, cols + 1):
-        for r in range(-1, rows + 1):
-            x = bbox.XMin + c * dx
-            y = bbox.YMin + r * dy
+    # Generate the 2D grid
+    for c in range(-3, cols + 3):
+        for r in range(-3, rows + 3):
+            # Apply offsets to base coordinates
+            x = bbox.XMin + c * dx + offset_x
+            y = bbox.YMin + r * dy + offset_y
             
             # Offset every odd column
             if c % 2 != 0:
                 y += dy / 2.0
             
-            # Draw a single hexagon using Part.makePolygon
+            # Draw a single hexagon
             pts = []
             for i in range(6):
                 angle_deg = i * 60
@@ -62,29 +57,16 @@ def generate_hex_pattern(target_obj, tile_radius=5.0, gap=0.5, mode="cut"):
             polygon = Part.makePolygon(pts)
             hex_faces.append(Part.Face(polygon))
             
-    # 3. Fuse and Extrude the grid into 3D pillars
+    # Fuse and Extrude the grid into 3D pillars
     grid_compound = Part.makeCompound(hex_faces)
-    z_height = (bbox.ZMax - bbox.ZMin) + 20 # Ensure it completely pierces the object bounds
+    z_height = (bbox.ZMax - bbox.ZMin) + 20 
     hex_pillars = grid_compound.extrude(App.Vector(0, 0, z_height))
     
-    # 4. Perform the selected Boolean Operation
+    # Perform the selected Boolean Operation
     if mode == "cut":
-        final_shape = target_obj.Shape.cut(hex_pillars)
-        feature_name = f"{target_obj.Name}_HexLattice"
+        return target_obj.Shape.cut(hex_pillars)
     else:
-        final_shape = target_obj.Shape.common(hex_pillars)
-        feature_name = f"{target_obj.Name}_HexPanels"
-    
-    # 5. Create the final FreeCAD object
-    panel_obj = App.ActiveDocument.addObject("Part::Feature", feature_name)
-    panel_obj.Shape = final_shape
-    
-    # Hide the original to see the result clearly
-    Gui.ActiveDocument.getObject(target_obj.Name).Visibility = False
-    App.ActiveDocument.recompute()
-    
-    op_text = "Lattice" if mode == "cut" else "Panels"
-    App.Console.PrintMessage(f"Successfully generated Hex {op_text} for {target_obj.Name}.\n")
+        return target_obj.Shape.common(hex_pillars)
 
 
 # ==========================================
@@ -92,15 +74,15 @@ def generate_hex_pattern(target_obj, tile_radius=5.0, gap=0.5, mode="cut"):
 # ==========================================
 
 class SmartHexTaskPanel:
-    def __init__(self):
-        # The 'form' attribute is required by FreeCAD's Task Panel system
+    def __init__(self, target_obj):
+        self.target_obj = target_obj
         self.form = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.form)
 
         instruction_text = (
-            "<b>1.</b> Select a solid object.<br>"
-            "<b>2.</b> Adjust hex sizes and gap.<br>"
-            "<b>3.</b> Choose operation and click Generate."
+            "<b>1.</b> Adjust hex sizes, gap, and offsets.<br>"
+            "<b>2.</b> View live preview in the 3D window.<br>"
+            "<b>3.</b> Click OK to apply or Cancel to revert."
         )
         layout.addWidget(QtWidgets.QLabel(instruction_text))
 
@@ -112,6 +94,8 @@ class SmartHexTaskPanel:
         self.radius_spin.setValue(8.0)
         self.radius_spin.setSuffix(" mm")
         self.radius_spin.setToolTip("The radius of a single hexagon tile.")
+        # Disable tracking so it only updates preview on Enter or losing focus to prevent typing lag
+        self.radius_spin.setKeyboardTracking(False) 
         form_layout.addRow("Tile Radius:", self.radius_spin)
 
         # Gap Size
@@ -120,7 +104,26 @@ class SmartHexTaskPanel:
         self.gap_spin.setValue(1.0)
         self.gap_spin.setSuffix(" mm")
         self.gap_spin.setToolTip("The space between tiles (creates the lattice walls).")
+        self.gap_spin.setKeyboardTracking(False)
         form_layout.addRow("Gap Size:", self.gap_spin)
+
+        # X Offset
+        self.offset_x_spin = QtWidgets.QDoubleSpinBox()
+        self.offset_x_spin.setRange(-1000.0, 1000.0)
+        self.offset_x_spin.setValue(0.0)
+        self.offset_x_spin.setSuffix(" mm")
+        self.offset_x_spin.setToolTip("Shift the entire pattern along the X axis.")
+        self.offset_x_spin.setKeyboardTracking(False)
+        form_layout.addRow("X Offset:", self.offset_x_spin)
+
+        # Y Offset
+        self.offset_y_spin = QtWidgets.QDoubleSpinBox()
+        self.offset_y_spin.setRange(-1000.0, 1000.0)
+        self.offset_y_spin.setValue(0.0)
+        self.offset_y_spin.setSuffix(" mm")
+        self.offset_y_spin.setToolTip("Shift the entire pattern along the Y axis.")
+        self.offset_y_spin.setKeyboardTracking(False)
+        form_layout.addRow("Y Offset:", self.offset_y_spin)
 
         # Operation Toggle
         self.operation_combo = QtWidgets.QComboBox()
@@ -130,37 +133,60 @@ class SmartHexTaskPanel:
         form_layout.addRow("Operation:", self.operation_combo)
 
         layout.addLayout(form_layout)
-
-        # Action Button
-        self.btn_gen = QtWidgets.QPushButton("Generate")
-        self.btn_gen.setStyleSheet("font-weight: bold; padding: 10px;")
-        self.btn_gen.clicked.connect(self.execute_macro)
-        layout.addWidget(self.btn_gen)
-
-        # Pushes elements to the top
         layout.addStretch()
 
-    def execute_macro(self):
-        selection = Gui.Selection.getSelection()
-        if not selection:
-            App.Console.PrintError("Error: Select a solid object first.\n")
-            return
+        # Connect Signals for Live Update
+        self.radius_spin.valueChanged.connect(self.update_preview)
+        self.gap_spin.valueChanged.connect(self.update_preview)
+        self.offset_x_spin.valueChanged.connect(self.update_preview)
+        self.offset_y_spin.valueChanged.connect(self.update_preview)
+        self.operation_combo.currentIndexChanged.connect(self.update_preview)
 
-        target_obj = selection[0]
+        # --- PREVIEW SETUP ---
+        # 1. Start a single Undo transaction for the whole UI session
+        App.ActiveDocument.openTransaction("Hex Pattern Preview")
+        
+        # 2. Create the temporary preview object and hide the base object
+        self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "HexPreview")
+        self.target_obj.Visibility = False
+        
+        # 3. Run the first generation to show initial state
+        self.update_preview()
+
+    def update_preview(self, *args):
+        """Called automatically whenever any parameter is changed."""
         radius = self.radius_spin.value()
         gap = self.gap_spin.value()
-        
-        # Determine mode from combo box selection
+        offset_x = self.offset_x_spin.value()
+        offset_y = self.offset_y_spin.value()
         mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
 
-        generate_hex_pattern(target_obj, radius, gap, mode)
+        try:
+            # Generate shape and assign to preview object
+            new_shape = calculate_hex_shape(self.target_obj, radius, gap, mode, offset_x, offset_y)
+            self.preview_obj.Shape = new_shape
+            App.ActiveDocument.recompute()
+        except Exception as e:
+            App.Console.PrintError(f"Preview calculation error: {e}\n")
 
     # --- FreeCAD Task Panel Required Methods ---
     def getStandardButtons(self):
-        return QtWidgets.QDialogButtonBox.Close.value
+        # Automatically creates standard "OK" and "Cancel" buttons
+        return int(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+
+    def accept(self):
+        # Apply final naming
+        mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
+        op_text = "Lattice" if mode == "cut" else "Panels"
+        self.preview_obj.Label = f"{self.target_obj.Name}_Hex{op_text}"
+        
+        # Lock in the preview transaction (adds it to the undo stack as one step)
+        App.ActiveDocument.commitTransaction()
+        Gui.Control.closeDialog()
 
     def reject(self):
-        # Called when the user clicks the Close button
+        # Discard the transaction (deletes the preview obj and un-hides the target automatically)
+        App.ActiveDocument.abortTransaction()
         Gui.Control.closeDialog()
 
 
@@ -168,6 +194,11 @@ class SmartHexTaskPanel:
 if Gui.Control.activeDialog():
     Gui.Control.closeDialog()
 
-# 2. Launch natively in the Tasks tab
-panel = SmartHexTaskPanel()
-Gui.Control.showDialog(panel)
+# 2. Extract selection BEFORE launching the UI
+sel = Gui.Selection.getSelection()
+if not sel or not hasattr(sel[0], "Shape"):
+    App.Console.PrintError("Error: Select a valid solid object first.\n")
+else:
+    # 3. Launch natively in the Tasks tab
+    panel = SmartHexTaskPanel(sel[0])
+    Gui.Control.showDialog(panel)
