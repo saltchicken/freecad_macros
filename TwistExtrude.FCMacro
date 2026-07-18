@@ -14,7 +14,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 @MacroShared.with_undo("Twist Extrude")
-def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", sketches_only=False):
+def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", twist_easing="Linear", sketches_only=False):
     doc = App.ActiveDocument
     if doc is None: return
 
@@ -65,11 +65,27 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
     created_sketches = []
 
     for i in range(num_sections):
+        # Base linear progression (0.0 to 1.0)
         t = float(i) / (num_sections - 1)
-        angle = t * total_angle
+        
+        # --- EASING LOGIC ---
+        # Remap 't' for the twist angle to create acceleration/deceleration
+        if twist_easing == "Ease In (Quad)":
+            twist_t = t * t
+        elif twist_easing == "Ease Out (Quad)":
+            twist_t = 1.0 - (1.0 - t) * (1.0 - t)
+        elif twist_easing == "Ease In-Out (Smoothstep)":
+            twist_t = t * t * (3.0 - 2.0 * t)
+        elif twist_easing == "Ease In-Out (Sine)":
+            twist_t = 0.5 * (1.0 - math.cos(math.pi * t))
+        else: # Linear
+            twist_t = t
+
+        # Apply eased time to rotation, but keep height linear
+        angle = twist_t * total_angle
         z = t * total_height if not is_path_mode else 0.0
 
-        # 1. Evaluate the scaling equation
+        # 1. Evaluate the scaling equation (using linear t so scale matches height)
         local_env = safe_env.copy()
         local_env["t"] = t
         local_env["z"] = z
@@ -82,16 +98,16 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
 
         scale_factor = max(0.001, float(scale_factor))
 
-        # 2 & 3. Create a live Parametric Clone instead of a static shape snapshot
+        # 2 & 3. Create a live Parametric Clone
         new_sketch = Draft.make_clone(profile_obj)
         mode_label = "PathSweep" if is_path_mode else "EqTwist"
         new_sketch.Label = f"{profile_obj.Label}_{mode_label}_{i+1}"
 
-        # Apply scaling parametrically via the Clone's Scale property
+        # Apply scaling parametrically
         if hasattr(new_sketch, "Scale"):
             new_sketch.Scale = App.Vector(scale_factor, scale_factor, 1.0)
 
-        # 4. Placement Logic (Routed based on mode)
+        # 4. Placement Logic
         if is_path_mode:
             point = points[i]
             tangent = tangents[i]
@@ -143,7 +159,6 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
 # ==========================================
 class SmartTwistTaskPanel:
     def __init__(self):
-        # The 'form' attribute is required by FreeCAD's Task Panel system
         self.form = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.form)
 
@@ -170,6 +185,18 @@ class SmartTwistTaskPanel:
         self.angle_spin.setValue(360.0)
         self.angle_spin.setSuffix(" °")
         form_layout.addRow("Total Twist Angle:", self.angle_spin)
+        
+        # --- NEW: Twist Easing ---
+        self.easing_combo = QtWidgets.QComboBox()
+        self.easing_combo.addItems([
+            "Linear", 
+            "Ease In (Quad)", 
+            "Ease Out (Quad)", 
+            "Ease In-Out (Smoothstep)",
+            "Ease In-Out (Sine)"
+        ])
+        self.easing_combo.setToolTip("Controls how the twist accelerates and decelerates.")
+        form_layout.addRow("Twist Easing:", self.easing_combo)
 
         # Sections
         self.sections_spin = QtWidgets.QSpinBox()
@@ -211,7 +238,6 @@ class SmartTwistTaskPanel:
         self.btn_gen.clicked.connect(self.generate)
         layout.addWidget(self.btn_gen)
 
-        # Pushes everything to the top of the panel
         layout.addStretch()
 
     def generate(self):
@@ -220,23 +246,18 @@ class SmartTwistTaskPanel:
             self.angle_spin.value(),
             self.sections_spin.value(),
             self.equation_input.currentText(),
+            self.easing_combo.currentText(),     # Added easing argument
             self.sketches_only_cb.isChecked()
         )
-        # Note: We removed the close command here so the panel stays open
-        # for rapid iteration and tweaking.
 
-    # --- FreeCAD Task Panel Required Methods ---
     def getStandardButtons(self):
         return QtWidgets.QDialogButtonBox.Close.value
 
     def reject(self):
-        # Called when the user clicks the Close button
         Gui.Control.closeDialog()
 
-# 1. Close active dialogs to prevent overlaps
 if Gui.Control.activeDialog():
     Gui.Control.closeDialog()
 
-# 2. Launch natively in the Tasks tab
 panel = SmartTwistTaskPanel()
 Gui.Control.showDialog(panel)
