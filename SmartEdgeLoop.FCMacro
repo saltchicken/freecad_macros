@@ -5,7 +5,7 @@ import math
 from PySide6 import QtWidgets, QtCore
 
 # ==========================================
-# CORE LOGIC
+# CORE LOGIC: SMART EDGE LOOP
 # ==========================================
 
 def get_vertex_key(vertex, tolerance=4):
@@ -26,8 +26,7 @@ def get_outward_tangent(edge, vertex_point):
 
         elif (v_end - vertex_point).Length < 1e-4:
             param = edge.ParameterRange[1]
-            vec = edge.tangentAt(param).normalize()
-            return vec.multiply(-1.0)
+            return edge.tangentAt(param).normalize().multiply(-1.0)
 
     except Exception:
         return None
@@ -81,7 +80,6 @@ def select_smart_loop(angle_tolerance=45.0):
         App.Console.PrintError("SmartLoop: Selection is empty.\n")
         return
 
-    # Identify the seed Edge and the optional constraining Face
     start_edge_name = None
     target_face_name = None
 
@@ -96,26 +94,21 @@ def select_smart_loop(angle_tolerance=45.0):
         return
 
     shape = obj.Shape
-
-    # If a Face is selected, build a whitelist of its edges
     allowed_edge_names = None
     if target_face_name:
         allowed_edge_names = set()
         target_face = shape.getElement(target_face_name)
         
-        # Match the face's edges to the main body's edge names using topology
         for face_edge in target_face.Edges:
             for i, body_edge in enumerate(shape.Edges):
                 if face_edge.isSame(body_edge):
                     allowed_edge_names.add(f"Edge{i+1}")
                     break
 
-        # Safety check: Ensure the seed edge is actually on the selected face
         if start_edge_name not in allowed_edge_names:
             App.Console.PrintError("SmartLoop: The selected seed Edge does not belong to the selected Face.\n")
             return
 
-    # Map all edges to vertices
     vertex_map = {}
     for i, edge in enumerate(shape.Edges):
         edge_name = f"Edge{i+1}"
@@ -125,7 +118,6 @@ def select_smart_loop(angle_tolerance=45.0):
                 vertex_map[v_key] = []
             vertex_map[v_key].append((edge_name, edge))
 
-    # Find the starting edge object
     start_edge = None
     for name, edge in vertex_map.get(get_vertex_key(shape.getElement(start_edge_name).Vertexes[0]), []):
         if name == start_edge_name:
@@ -135,7 +127,6 @@ def select_smart_loop(angle_tolerance=45.0):
     if not start_edge:
         return
 
-    # Traverse loop
     loop_edge_names = set([start_edge_name])
     endpoints = [start_edge.Vertexes[0], start_edge.Vertexes[-1]]
 
@@ -148,7 +139,6 @@ def select_smart_loop(angle_tolerance=45.0):
             v_key = get_vertex_key(current_vertex)
             connected = vertex_map.get(v_key, [])
 
-            # Filter candidates: Must not be already selected, AND must be in face whitelist (if active)
             candidates = [e for e in connected if e[0] not in loop_edge_names]
             if allowed_edge_names:
                 candidates = [e for e in candidates if e[0] in allowed_edge_names]
@@ -168,7 +158,6 @@ def select_smart_loop(angle_tolerance=45.0):
             current_edge = next_edge
             current_edge_name = next_edge_name
 
-    # Apply selection
     Gui.Selection.clearSelection()
     for edge_name in loop_edge_names:
         Gui.Selection.addSelection(obj, edge_name)
@@ -178,55 +167,150 @@ def select_smart_loop(angle_tolerance=45.0):
 
 
 # ==========================================
-# GUI LOGIC (Native Task Panel)
+# CORE LOGIC: BULK EDGE CLASSIFICATION
 # ==========================================
 
-class SmartEdgeLoopTaskPanel:
-    def __init__(self):
-        # The 'form' attribute is required by FreeCAD's Task Panel system
-        self.form = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.form)
+def map_and_classify_edges(obj):
+    """Categorizes all edges of a solid into boundary, planar, convex, or concave."""
+    shape = obj.Shape
+    categories = {"boundary": [], "planar": [], "convex": [], "concave": []}
+    
+    edge_map = {}
+    for i, edge in enumerate(shape.Edges):
+        edge_name = f"Edge{i+1}"
+        edge_map[edge_name] = {'edge': edge, 'faces': []}
+        
+    for face in shape.Faces:
+        for face_edge in face.Edges:
+            for e_name, data in edge_map.items():
+                if data['edge'].isSame(face_edge):
+                    data['faces'].append(face)
+                    break
+                    
+    for edge_name, data in edge_map.items():
+        edge = data['edge']
+        faces = data['faces']
+        
+        if len(faces) == 1:
+            categories["boundary"].append(edge_name)
+        elif len(faces) >= 2:
+            f1, f2 = faces[0], faces[1]
+            
+            P = edge.CenterOfMass
+            C1 = f1.CenterOfMass
+            C2 = f2.CenterOfMass
+            
+            v1 = (C1 - P)
+            v2 = (C2 - P)
+            
+            if v1.Length > 0: v1.normalize()
+            if v2.Length > 0: v2.normalize()
+            
+            v_avg = v1 + v2
+            
+            if v_avg.Length < 1e-4:
+                categories["planar"].append(edge_name)
+                continue
+                
+            v_avg.normalize()
+            step_size = max(edge.Length * 0.01, 0.001)
+            P_test = P + v_avg * step_size
+            
+            if shape.isInside(P_test, 1e-5, True):
+                categories["convex"].append(edge_name)
+            else:
+                categories["concave"].append(edge_name)
+                
+    return categories
 
+def select_edges_by_type(category_keys):
+    """Clears selection and selects all edges matching the requested categories."""
+    sel_ex = Gui.Selection.getSelectionEx()
+    if not sel_ex:
+        App.Console.PrintError("BulkSelect: Select a 3D object (or any of its faces/edges) first.\n")
+        return
+        
+    obj = sel_ex[0].Object
+    categories = map_and_classify_edges(obj)
+    
+    Gui.Selection.clearSelection()
+    
+    count = 0
+    for key in category_keys:
+        for edge_name in categories[key]:
+            Gui.Selection.addSelection(obj, edge_name)
+            count += 1
+            
+    App.Console.PrintMessage(f"BulkSelect: Selected {count} '{'+'.join(category_keys)}' edges.\n")
+
+
+# ==========================================
+# GUI LOGIC (Combined Native Task Panel)
+# ==========================================
+
+class SmartEdgeToolsTaskPanel:
+    def __init__(self):
+        self.form = QtWidgets.QWidget()
+        main_layout = QtWidgets.QVBoxLayout(self.form)
+
+        # --- GROUP 1: SMART LOOP ---
+        group_loop = QtWidgets.QGroupBox("Smart Edge Loop")
+        loop_layout = QtWidgets.QVBoxLayout()
+        
         instruction_text = (
             "<b>1.</b> Select a single seed edge.<br>"
             "<b>2.</b> <i>(Optional)</i> Ctrl+click a Face to constrain routing.<br>"
-            "<b>3.</b> Adjust tangency tolerance.<br>"
-            "<b>4.</b> Click Select Loop to recalculate."
+            "<b>3.</b> Adjust tolerance and click Select Loop."
         )
-        layout.addWidget(QtWidgets.QLabel(instruction_text))
+        loop_layout.addWidget(QtWidgets.QLabel(instruction_text))
 
         form_layout = QtWidgets.QFormLayout()
-
-        # Tolerance Spinbox
         self.tolerance_spin = QtWidgets.QDoubleSpinBox()
         self.tolerance_spin.setRange(0.0, 180.0)
         self.tolerance_spin.setValue(45.0)
         self.tolerance_spin.setSuffix(" °")
-        self.tolerance_spin.setToolTip("Maximum angle deviation allowed for a continuous curve.\n0° = perfectly smooth, 90° = allows sharp corners.")
         form_layout.addRow("Max Angle:", self.tolerance_spin)
+        loop_layout.addLayout(form_layout)
 
-        layout.addLayout(form_layout)
-
-        # Action Button
         self.btn_select = QtWidgets.QPushButton("Select Loop")
-        self.btn_select.setStyleSheet("font-weight: bold; padding: 8px;")
-        self.btn_select.clicked.connect(self.execute_selection)
-        layout.addWidget(self.btn_select)
+        self.btn_select.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.btn_select.clicked.connect(lambda: select_smart_loop(self.tolerance_spin.value()))
+        loop_layout.addWidget(self.btn_select)
+        
+        group_loop.setLayout(loop_layout)
+        main_layout.addWidget(group_loop)
 
-        # Pushes elements to the top
-        layout.addStretch()
+        # --- GROUP 2: BULK SELECTION ---
+        group_bulk = QtWidgets.QGroupBox("Bulk Edge Selection")
+        bulk_layout = QtWidgets.QVBoxLayout()
+        
+        bulk_instruction = QtWidgets.QLabel("Select the object in the tree, then click a filter:")
+        bulk_instruction.setWordWrap(True)
+        bulk_layout.addWidget(bulk_instruction)
+        
+        self.btn_in = QtWidgets.QPushButton("Select Interior (Concave / Holes)")
+        self.btn_in.clicked.connect(lambda: select_edges_by_type(["concave"]))
+        bulk_layout.addWidget(self.btn_in)
+        
+        self.btn_out = QtWidgets.QPushButton("Select Exterior (Convex)")
+        self.btn_out.clicked.connect(lambda: select_edges_by_type(["convex"]))
+        bulk_layout.addWidget(self.btn_out)
+        
+        self.btn_bound = QtWidgets.QPushButton("Select Naked (Surface Boundaries)")
+        self.btn_bound.clicked.connect(lambda: select_edges_by_type(["boundary"]))
+        bulk_layout.addWidget(self.btn_bound)
+        
+        group_bulk.setLayout(bulk_layout)
+        main_layout.addWidget(group_bulk)
 
-    def execute_selection(self):
-        tolerance = self.tolerance_spin.value()
-        select_smart_loop(tolerance)
+        # Push elements to the top
+        main_layout.addStretch()
 
     # --- FreeCAD Task Panel Required Methods ---
-
     def getStandardButtons(self):
         return QtWidgets.QDialogButtonBox.Close.value
 
     def reject(self):
-        # This is called when the user clicks the Close button
         Gui.Control.closeDialog()
 
 
@@ -234,9 +318,13 @@ class SmartEdgeLoopTaskPanel:
 if Gui.Control.activeDialog():
     Gui.Control.closeDialog()
 
-# 2. Launch it natively in the Tasks tab
-panel = SmartEdgeLoopTaskPanel()
+# 2. Launch natively in the Tasks tab
+panel = SmartEdgeToolsTaskPanel()
 Gui.Control.showDialog(panel)
 
-# 3. Automatically run the selection algorithm on launch
-panel.execute_selection()
+# 3. If an edge is already selected on launch, try to run the loop logic
+if Gui.Selection.getSelectionEx():
+    try:
+        select_smart_loop(45.0)
+    except:
+        pass
