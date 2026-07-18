@@ -206,9 +206,9 @@ class SmartHexTaskPanel:
         except Exception as e:
             App.Console.PrintError(f"Preview calculation error: {e}\n")
 
-    # --- FreeCAD Task Panel Required Methods ---
     def getStandardButtons(self):
-        return int(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        # In PySide6, use .value to get the integer representation of the enum flag
+        return (QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel).value
 
     def accept(self):
         mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
