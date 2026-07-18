@@ -13,7 +13,7 @@ importlib.reload(MacroShared)
 # ==========================================
 # CORE LOGIC
 # ==========================================
-@MacroShared.with_undo("Smart Twist Extrude")
+@MacroShared.with_undo("Twist Extrude")
 def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", sketches_only=False):
     doc = App.ActiveDocument
     if doc is None: return
