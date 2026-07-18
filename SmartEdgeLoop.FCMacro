@@ -73,19 +73,49 @@ def select_smart_loop(angle_tolerance=45.0):
         App.Console.PrintError("SmartLoop: Select an edge first.\n")
         return
 
-    # Always use the first selected element as the seed
     sel_object = sel_ex[0]
     obj = sel_object.Object
     sub_names = sel_object.SubElementNames
 
-    if not sub_names or not sub_names[0].startswith("Edge"):
-        App.Console.PrintError("SmartLoop: The seed element must be an Edge.\n")
+    if not sub_names:
+        App.Console.PrintError("SmartLoop: Selection is empty.\n")
         return
 
-    start_edge_name = sub_names[0]
+    # Identify the seed Edge and the optional constraining Face
+    start_edge_name = None
+    target_face_name = None
+
+    for name in sub_names:
+        if name.startswith("Edge") and not start_edge_name:
+            start_edge_name = name
+        elif name.startswith("Face") and not target_face_name:
+            target_face_name = name
+
+    if not start_edge_name:
+        App.Console.PrintError("SmartLoop: You must select at least one Edge as a seed.\n")
+        return
+
     shape = obj.Shape
 
-    # Map edges to vertices
+    # If a Face is selected, build a whitelist of its edges
+    allowed_edge_names = None
+    if target_face_name:
+        allowed_edge_names = set()
+        target_face = shape.getElement(target_face_name)
+        
+        # Match the face's edges to the main body's edge names using topology
+        for face_edge in target_face.Edges:
+            for i, body_edge in enumerate(shape.Edges):
+                if face_edge.isSame(body_edge):
+                    allowed_edge_names.add(f"Edge{i+1}")
+                    break
+
+        # Safety check: Ensure the seed edge is actually on the selected face
+        if start_edge_name not in allowed_edge_names:
+            App.Console.PrintError("SmartLoop: The selected seed Edge does not belong to the selected Face.\n")
+            return
+
+    # Map all edges to vertices
     vertex_map = {}
     for i, edge in enumerate(shape.Edges):
         edge_name = f"Edge{i+1}"
@@ -95,6 +125,7 @@ def select_smart_loop(angle_tolerance=45.0):
                 vertex_map[v_key] = []
             vertex_map[v_key].append((edge_name, edge))
 
+    # Find the starting edge object
     start_edge = None
     for name, edge in vertex_map.get(get_vertex_key(shape.getElement(start_edge_name).Vertexes[0]), []):
         if name == start_edge_name:
@@ -117,7 +148,11 @@ def select_smart_loop(angle_tolerance=45.0):
             v_key = get_vertex_key(current_vertex)
             connected = vertex_map.get(v_key, [])
 
+            # Filter candidates: Must not be already selected, AND must be in face whitelist (if active)
             candidates = [e for e in connected if e[0] not in loop_edge_names]
+            if allowed_edge_names:
+                candidates = [e for e in candidates if e[0] in allowed_edge_names]
+
             if not candidates:
                 break
 
@@ -138,7 +173,8 @@ def select_smart_loop(angle_tolerance=45.0):
     for edge_name in loop_edge_names:
         Gui.Selection.addSelection(obj, edge_name)
 
-    App.Console.PrintMessage(f"SmartLoop: Selected {len(loop_edge_names)} edges at <= {angle_tolerance}° tolerance.\n")
+    mode_text = f" constrained to {target_face_name}" if target_face_name else ""
+    App.Console.PrintMessage(f"SmartLoop: Selected {len(loop_edge_names)} edges at <= {angle_tolerance}° tolerance{mode_text}.\n")
 
 
 # ==========================================
@@ -152,9 +188,10 @@ class SmartEdgeLoopTaskPanel:
         layout = QtWidgets.QVBoxLayout(self.form)
 
         instruction_text = (
-            "<b>1.</b> Select a single edge.<br>"
-            "<b>2.</b> Adjust tangency tolerance.<br>"
-            "<b>3.</b> Click Select Loop to recalculate."
+            "<b>1.</b> Select a single seed edge.<br>"
+            "<b>2.</b> <i>(Optional)</i> Ctrl+click a Face to constrain routing.<br>"
+            "<b>3.</b> Adjust tangency tolerance.<br>"
+            "<b>4.</b> Click Select Loop to recalculate."
         )
         layout.addWidget(QtWidgets.QLabel(instruction_text))
 
