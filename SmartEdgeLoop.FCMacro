@@ -245,6 +245,80 @@ def select_edges_by_type(category_keys):
 
 
 # ==========================================
+# CORE LOGIC: DIRECTIONAL MATCHING
+# ==========================================
+
+def get_edge_direction(edge):
+    """Returns the normalized vector spanning from the start to the end vertex of an edge."""
+    if not edge.Vertexes or len(edge.Vertexes) < 2:
+        return None
+    
+    v_start = edge.Vertexes[0].Point
+    v_end = edge.Vertexes[-1].Point
+    vec = v_end - v_start
+    
+    # If length is ~0, it's a closed loop (like a circle) and doesn't have a single direction
+    if vec.Length > 1e-5:
+        return vec.normalize()
+    return None
+
+def select_by_direction(mode="perpendicular", tolerance_deg=1.0):
+    """Selects edges parallel or perpendicular to the currently selected edge."""
+    sel_ex = Gui.Selection.getSelectionEx()
+    if not sel_ex:
+        App.Console.PrintError("DirectionSelect: Select a reference edge first.\n")
+        return
+        
+    sel_object = sel_ex[0]
+    obj = sel_object.Object
+    sub_names = sel_object.SubElementNames
+
+    ref_edge_name = next((name for name in sub_names if name.startswith("Edge")), None)
+    if not ref_edge_name:
+        App.Console.PrintError("DirectionSelect: You must select at least one Edge as a reference.\n")
+        return
+
+    shape = obj.Shape
+    ref_edge = shape.getElement(ref_edge_name)
+    ref_dir = get_edge_direction(ref_edge)
+    
+    if not ref_dir:
+        App.Console.PrintError("DirectionSelect: Could not determine the linear direction of the reference edge.\n")
+        return
+
+    Gui.Selection.clearSelection()
+    Gui.Selection.addSelection(obj, ref_edge_name) # Retain the seed edge
+    
+    rad_tol = math.radians(tolerance_deg)
+    count = 0
+    
+    for i, edge in enumerate(shape.Edges):
+        edge_name = f"Edge{i+1}"
+        if edge_name == ref_edge_name:
+            continue
+            
+        edge_dir = get_edge_direction(edge)
+        if not edge_dir:
+            continue # Skip closed circles/loops
+            
+        dot_prod = abs(ref_dir.dot(edge_dir))
+        
+        if mode == "perpendicular":
+            # Perpendicular vectors have a dot product near 0
+            if dot_prod <= math.sin(rad_tol):
+                Gui.Selection.addSelection(obj, edge_name)
+                count += 1
+                
+        elif mode == "parallel":
+            # Parallel vectors have an absolute dot product near 1
+            if dot_prod >= math.cos(rad_tol):
+                Gui.Selection.addSelection(obj, edge_name)
+                count += 1
+                
+    App.Console.PrintMessage(f"DirectionSelect: Selected {count} {mode} edges (tolerance ±{tolerance_deg}°).\n")
+
+
+# ==========================================
 # GUI LOGIC (Combined Native Task Panel)
 # ==========================================
 
@@ -280,8 +354,28 @@ class SmartEdgeToolsTaskPanel:
         group_loop.setLayout(loop_layout)
         main_layout.addWidget(group_loop)
 
-        # --- GROUP 2: BULK SELECTION ---
-        group_bulk = QtWidgets.QGroupBox("Bulk Edge Selection")
+        # --- GROUP 2: DIRECTIONAL MATCHING ---
+        group_dir = QtWidgets.QGroupBox("Directional Matching")
+        dir_layout = QtWidgets.QVBoxLayout()
+        
+        dir_instruction = QtWidgets.QLabel("Select a single reference edge:")
+        dir_layout.addWidget(dir_instruction)
+        
+        # Parallel Button
+        self.btn_para = QtWidgets.QPushButton("Select Parallel Edges")
+        self.btn_para.clicked.connect(lambda: select_by_direction("parallel", 1.0))
+        dir_layout.addWidget(self.btn_para)
+        
+        # Perpendicular Button
+        self.btn_perp = QtWidgets.QPushButton("Select Perpendicular Edges")
+        self.btn_perp.clicked.connect(lambda: select_by_direction("perpendicular", 1.0))
+        dir_layout.addWidget(self.btn_perp)
+        
+        group_dir.setLayout(dir_layout)
+        main_layout.addWidget(group_dir)
+
+        # --- GROUP 3: BULK SELECTION ---
+        group_bulk = QtWidgets.QGroupBox("Bulk Edge Classification")
         bulk_layout = QtWidgets.QVBoxLayout()
         
         bulk_instruction = QtWidgets.QLabel("Select the object in the tree, then click a filter:")
