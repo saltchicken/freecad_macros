@@ -2,8 +2,16 @@ import FreeCAD as App
 import FreeCADGui as Gui
 import Part
 import math
+import random
 from PySide6 import QtWidgets
 import importlib
+
+# Attempt to load SciPy for Voronoi math
+try:
+    from scipy.spatial import Voronoi
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
 
 from SharedLib import MacroShared
 importlib.reload(MacroShared)
@@ -19,33 +27,8 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     """
     bbox = target_obj.Shape.BoundBox
     step_radius = tile_radius + gap
-
-    # Determine grid spacing and stagger based on pattern type
-    if pattern == "Hexagon":
-        dx = 1.5 * step_radius
-        dy = math.sqrt(3) * step_radius
-        odd_y_offset = dy / 2.0
-    elif pattern == "Square":
-        dx = 2.0 * step_radius
-        dy = 2.0 * step_radius
-        odd_y_offset = 0.0
-    elif pattern == "Circle (Grid)":
-        dx = 2.0 * step_radius
-        dy = 2.0 * step_radius
-        odd_y_offset = 0.0
-    elif pattern == "Circle (Staggered)":
-        dx = math.sqrt(3) * step_radius
-        dy = 2.0 * step_radius
-        odd_y_offset = dy / 2.0
-    else:
-        return target_obj.Shape.copy()
-
-    # Calculate how many columns/rows are needed to cover the BBox
-    # Added a larger buffer (+4) to ensure staggered patterns fully cover the edges
-    cols = int((bbox.XMax - bbox.XMin) / dx) + 4
-    rows = int((bbox.YMax - bbox.YMin) / dy) + 4
-
     pattern_faces = []
+    
     z_min_line = bbox.ZMin - 10
     z_max_line = bbox.ZMax + 10
     target_shape = target_obj.Shape
@@ -55,67 +38,141 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         line = Part.makeLine(App.Vector(px, py, z_min_line), App.Vector(px, py, z_max_line))
         return line.distToShape(target_shape)[0] <= 1e-4
 
-    # Generate the 2D grid
-    for c in range(-4, cols + 4):
-        for r in range(-4, rows + 4):
-            # Apply offsets to base coordinates
-            x = bbox.XMin + c * dx + offset_x
-            y = bbox.YMin + r * dy + offset_y
-            z = bbox.ZMin - 10
+    # ---------------------------------------------------------
+    # VORONOI GENERATION
+    # ---------------------------------------------------------
+    if pattern == "Voronoi (Organic)":
+        if not HAS_SCIPY:
+            App.Console.PrintError("SciPy is missing. Cannot generate Voronoi pattern.\n")
+            return target_obj.Shape.copy()
 
-            # Apply stagger to every odd column if the pattern requires it
-            if c % 2 != 0:
-                y += odd_y_offset
+        # Grid math for seed points
+        dx = dy = 1.5 * step_radius
+        cols = int((bbox.XMax - bbox.XMin) / dx) + 6
+        rows = int((bbox.YMax - bbox.YMin) / dy) + 6
 
-            # 1. Generate test points for Strict Mode and Polygon generation
-            test_pts = []
-            if pattern == "Hexagon":
-                for i in range(6):
-                    angle = math.radians(i * 60)
-                    test_pts.append(App.Vector(x + tile_radius * math.cos(angle), y + tile_radius * math.sin(angle), z))
+        seed_points = []
+        
+        # Tie the random seed to the offsets so the organic pattern is 
+        # stable during live-preview tweaking, but can be "rolled" by shifting X/Y
+        random.seed(hash((offset_x, offset_y)))
+
+        for c in range(-4, cols + 4):
+            for r in range(-4, rows + 4):
+                px = bbox.XMin + c * dx + offset_x
+                py = bbox.YMin + r * dy + offset_y
+                # Add heavy jitter to create organic cell sizing
+                px += random.uniform(-0.45, 0.45) * dx
+                py += random.uniform(-0.45, 0.45) * dy
+                seed_points.append([px, py])
+
+        vor = Voronoi(seed_points)
+
+        for region_index in vor.point_region:
+            region = vor.regions[region_index]
+            if not region or -1 in region:
+                continue # Skip infinite perimeter regions
+
+            # 1. Get raw Voronoi polygon vertices
+            raw_pts = [App.Vector(vor.vertices[i][0], vor.vertices[i][1], z_min_line) for i in region]
             
-            elif pattern == "Square":
-                r_sq = tile_radius
-                test_pts = [
-                    App.Vector(x - r_sq, y - r_sq, z),
-                    App.Vector(x + r_sq, y - r_sq, z),
-                    App.Vector(x + r_sq, y + r_sq, z),
-                    App.Vector(x - r_sq, y + r_sq, z)
-                ]
+            # 2. Inset the polygon to create the "Gap"
+            # We do this by pulling points towards the centroid
+            centroid_x = sum(p.x for p in raw_pts) / len(raw_pts)
+            centroid_y = sum(p.y for p in raw_pts) / len(raw_pts)
+            centroid = App.Vector(centroid_x, centroid_y, z_min_line)
             
-            elif "Circle" in pattern:
-                # 8 points around circumference just for the Strict Mode inside/outside check
-                for i in range(8):
-                    angle = math.radians(i * 45)
-                    test_pts.append(App.Vector(x + tile_radius * math.cos(angle), y + tile_radius * math.sin(angle), z))
-
-            # 2. --- STRICT MODE FILTERING ---
+            inset_pts = []
+            for p in raw_pts:
+                vec = centroid - p
+                dist = vec.Length
+                # Move towards centroid by half the gap, clamping at 90% so cells don't invert
+                move_dist = min(gap / 2.0, dist * 0.9)
+                if dist > 1e-5:
+                    vec.normalize()
+                inset_pts.append(p + vec * move_dist)
+            
+            inset_pts.append(inset_pts[0]) # Close loop
+            
+            # 3. Strict Mode Check
             if strict_mode:
-                # Fast fail: check center first
-                if not is_point_inside(x, y):
-                    continue
-
-                # Check all outer perimeter points
                 valid_tile = True
-                for pt in test_pts:
-                    if not is_point_inside(pt.x, pt.y):
+                for p in inset_pts:
+                    if not is_point_inside(p.x, p.y):
                         valid_tile = False
                         break
-
                 if not valid_tile:
                     continue
-            # -----------------------------
-
-            # 3. Build the actual geometry face
-            if pattern in ["Hexagon", "Square"]:
-                test_pts.append(test_pts[0])  # Close the loop
-                polygon = Part.makePolygon(test_pts)
-                pattern_faces.append(Part.Face(polygon))
             
-            elif "Circle" in pattern:
-                # FreeCAD makes perfect circle edges natively, no need for polygon approximation
-                circle_edge = Part.makeCircle(tile_radius, App.Vector(x, y, z), App.Vector(0, 0, 1))
-                pattern_faces.append(Part.Face(Part.Wire(circle_edge)))
+            # 4. Build Face
+            polygon = Part.makePolygon(inset_pts)
+            pattern_faces.append(Part.Face(polygon))
+
+    # ---------------------------------------------------------
+    # STANDARD GEOMETRIC GENERATION
+    # ---------------------------------------------------------
+    else:
+        if pattern == "Hexagon":
+            dx = 1.5 * step_radius
+            dy = math.sqrt(3) * step_radius
+            odd_y_offset = dy / 2.0
+        elif pattern == "Square":
+            dx = 2.0 * step_radius
+            dy = 2.0 * step_radius
+            odd_y_offset = 0.0
+        elif pattern == "Circle (Grid)":
+            dx = 2.0 * step_radius
+            dy = 2.0 * step_radius
+            odd_y_offset = 0.0
+        elif pattern == "Circle (Staggered)":
+            dx = math.sqrt(3) * step_radius
+            dy = 2.0 * step_radius
+            odd_y_offset = dy / 2.0
+
+        cols = int((bbox.XMax - bbox.XMin) / dx) + 4
+        rows = int((bbox.YMax - bbox.YMin) / dy) + 4
+
+        for c in range(-4, cols + 4):
+            for r in range(-4, rows + 4):
+                x = bbox.XMin + c * dx + offset_x
+                y = bbox.YMin + r * dy + offset_y
+                z = bbox.ZMin - 10
+
+                if c % 2 != 0:
+                    y += odd_y_offset
+
+                test_pts = []
+                if pattern == "Hexagon":
+                    for i in range(6):
+                        angle = math.radians(i * 60)
+                        test_pts.append(App.Vector(x + tile_radius * math.cos(angle), y + tile_radius * math.sin(angle), z))
+                elif pattern == "Square":
+                    r_sq = tile_radius
+                    test_pts = [
+                        App.Vector(x - r_sq, y - r_sq, z), App.Vector(x + r_sq, y - r_sq, z),
+                        App.Vector(x + r_sq, y + r_sq, z), App.Vector(x - r_sq, y + r_sq, z)
+                    ]
+                elif "Circle" in pattern:
+                    for i in range(8):
+                        angle = math.radians(i * 45)
+                        test_pts.append(App.Vector(x + tile_radius * math.cos(angle), y + tile_radius * math.sin(angle), z))
+
+                if strict_mode:
+                    if not is_point_inside(x, y): continue
+                    valid_tile = True
+                    for pt in test_pts:
+                        if not is_point_inside(pt.x, pt.y):
+                            valid_tile = False
+                            break
+                    if not valid_tile: continue
+
+                if pattern in ["Hexagon", "Square"]:
+                    test_pts.append(test_pts[0])
+                    polygon = Part.makePolygon(test_pts)
+                    pattern_faces.append(Part.Face(polygon))
+                elif "Circle" in pattern:
+                    circle_edge = Part.makeCircle(tile_radius, App.Vector(x, y, z), App.Vector(0, 0, 1))
+                    pattern_faces.append(Part.Face(Part.Wire(circle_edge)))
 
     # Fail-safe: if strict mode culled EVERY tile
     if not pattern_faces:
@@ -157,7 +214,7 @@ class PatternTaskPanel:
 
         # Pattern Type
         self.pattern_combo = QtWidgets.QComboBox()
-        self.pattern_combo.addItems(["Hexagon", "Square", "Circle (Staggered)", "Circle (Grid)"])
+        self.pattern_combo.addItems(["Hexagon", "Square", "Circle (Staggered)", "Circle (Grid)", "Voronoi (Organic)"])
         self.pattern_combo.setToolTip("Select the geometric shape of the lattice.")
         form_layout.addRow("Pattern Shape:", self.pattern_combo)
 
@@ -184,7 +241,7 @@ class PatternTaskPanel:
         self.offset_x_spin.setRange(-1000.0, 1000.0)
         self.offset_x_spin.setValue(0.0)
         self.offset_x_spin.setSuffix(" mm")
-        self.offset_x_spin.setToolTip("Shift the entire pattern along the X axis.")
+        self.offset_x_spin.setToolTip("Shift the pattern. Note: For Voronoi, changing offsets generates a new random seed.")
         self.offset_x_spin.setKeyboardTracking(False)
         form_layout.addRow("X Offset:", self.offset_x_spin)
 
@@ -193,7 +250,7 @@ class PatternTaskPanel:
         self.offset_y_spin.setRange(-1000.0, 1000.0)
         self.offset_y_spin.setValue(0.0)
         self.offset_y_spin.setSuffix(" mm")
-        self.offset_y_spin.setToolTip("Shift the entire pattern along the Y axis.")
+        self.offset_y_spin.setToolTip("Shift the pattern. Note: For Voronoi, changing offsets generates a new random seed.")
         self.offset_y_spin.setKeyboardTracking(False)
         form_layout.addRow("Y Offset:", self.offset_y_spin)
 
@@ -224,14 +281,11 @@ class PatternTaskPanel:
 
         # --- PREVIEW SETUP ---
         App.ActiveDocument.openTransaction("Pattern Preview")
-
         self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "PatternPreview")
         self.target_obj.Visibility = False
-
         self.update_preview()
 
     def update_preview(self, *args):
-        """Called automatically whenever any parameter is changed."""
         pattern = self.pattern_combo.currentText()
         radius = self.radius_spin.value()
         gap = self.gap_spin.value()
@@ -241,7 +295,6 @@ class PatternTaskPanel:
         strict_mode = self.strict_check.isChecked()
 
         try:
-            # Generate shape and assign to preview object
             new_shape = calculate_pattern_shape(
                 self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, strict_mode
             )
@@ -257,7 +310,6 @@ class PatternTaskPanel:
         mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
         op_text = "Lattice" if mode == "cut" else "Panels"
         self.preview_obj.Label = f"{self.target_obj.Name}_{op_text}"
-
         App.ActiveDocument.commitTransaction()
         Gui.Control.closeDialog()
 
