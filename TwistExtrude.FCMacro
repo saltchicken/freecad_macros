@@ -11,25 +11,125 @@ from SharedLib import MacroShared
 importlib.reload(MacroShared)
 
 # ==========================================
-# CORE LOGIC
+# HELPER MATH
+# ==========================================
+def get_twist_t(t, twist_easing):
+    """Calculates the eased value of 't' for the twist angle."""
+    if twist_easing == "Ease In (Quad)":
+        return t * t
+    elif twist_easing == "Ease Out (Quad)":
+        return 1.0 - (1.0 - t) * (1.0 - t)
+    elif twist_easing == "Ease In-Out (Smoothstep)":
+        return t * t * (3.0 - 2.0 * t)
+    elif twist_easing == "Ease In-Out (Sine)":
+        return 0.5 * (1.0 - math.cos(math.pi * t))
+    return t
+
+# ==========================================
+# PREVIEW LOGIC (Fast In-Memory Generation)
+# ==========================================
+def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_angle, num_sections, equation_str, twist_easing, sketches_only):
+    """
+    Calculates a lightweight Part.Shape for the live preview. 
+    Does not create or mutate parametric FreeCAD objects.
+    """
+    is_path_mode = False
+    points, tangents = [], []
+
+    if path_obj and hasattr(path_obj, "Shape") and len(path_obj.Shape.Wires) > 0:
+        is_path_mode = True
+        path_wire = path_obj.Shape.Wires[0]
+        points = path_wire.discretize(Number=num_sections)
+
+        for i in range(num_sections):
+            if i == 0:
+                t_vec = points[1] - points[0]
+            elif i == num_sections - 1:
+                t_vec = points[-1] - points[-2]
+            else:
+                t_vec = points[i+1] - points[i-1]
+            t_vec.normalize()
+            tangents.append(t_vec)
+
+    if num_sections < 2: 
+        return Part.makeCompound([])
+
+    base_shape = profile_obj.Shape
+    if not base_shape.Wires:
+        return Part.makeCompound([])
+    
+    base_wire = base_shape.Wires[0].copy()
+    section_wires = []
+
+    safe_env = {
+        "math": math, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+        "pi": math.pi, "e": math.e, "pow": pow, "abs": abs,
+        "sqrt": math.sqrt, "log": math.log
+    }
+
+    for i in range(num_sections):
+        t = float(i) / (num_sections - 1)
+        twist_t = get_twist_t(t, twist_easing)
+        
+        angle = twist_t * total_angle
+        z = t * total_height if not is_path_mode else 0.0
+
+        local_env = safe_env.copy()
+        local_env["t"] = t
+        local_env["z"] = z
+
+        try:
+            scale_factor = eval(equation_str, {"__builtins__": {}}, local_env)
+            scale_factor = max(0.001, float(scale_factor))
+        except Exception:
+            scale_factor = 1.0 # Gracefully degrade on syntax errors while typing
+
+        if is_path_mode:
+            point = points[i]
+            tangent = tangents[i]
+            z_vec = App.Vector(0, 0, 1)
+
+            if z_vec.dot(tangent) < -0.9999:
+                align_rot = App.Rotation(App.Vector(1, 0, 0), 180)
+            elif z_vec.dot(tangent) > 0.9999:
+                align_rot = App.Rotation(0, 0, 0)
+            else:
+                align_rot = App.Rotation(z_vec, tangent)
+
+            twist_rot = App.Rotation(App.Vector(0, 0, 1), angle)
+            final_rot = align_rot.multiply(twist_rot)
+            new_placement = App.Placement(point, final_rot)
+        else:
+            new_placement = App.Placement(App.Vector(0, 0, z), App.Rotation(App.Vector(0, 0, 1), angle))
+
+        # Apply transformation to the wire
+        mat = new_placement.Matrix
+        scale_mat = App.Matrix()
+        scale_mat.scale(scale_factor, scale_factor, 1.0)
+        final_mat = mat.multiply(scale_mat)
+        
+        w = base_wire.copy()
+        w = w.transformShape(final_mat)
+        section_wires.append(w)
+
+    if sketches_only:
+        return Part.makeCompound(section_wires)
+    else:
+        try:
+            solid = True if base_shape.isClosed() else False
+            return Part.makeLoft(section_wires, solid)
+        except Exception:
+            return Part.makeCompound(section_wires)
+
+
+# ==========================================
+# TRUE GENERATION LOGIC
 # ==========================================
 @MacroShared.with_undo("Twist Extrude")
-def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", twist_easing="Linear", sketches_only=False):
+def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", twist_easing="Linear", sketches_only=False):
     doc = App.ActiveDocument
     if doc is None: return
 
-    selection = Gui.Selection.getSelection()
-    if not selection:
-        App.Console.PrintError("Error: Select at least a Profile Sketch.\n")
-        return
-
-    profile_obj = selection[0]
-    if not hasattr(profile_obj, "TypeId") or "Sketcher::SketchObject" not in profile_obj.TypeId:
-        App.Console.PrintError("Error: The first selected object must be a Sketch (Profile).\n")
-        return
-
-    # Check if a second object is selected to act as a path
-    path_obj = selection[1] if len(selection) >= 2 else None
     is_path_mode = False
     points, tangents = [], []
 
@@ -39,7 +139,6 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
             path_wire = path_obj.Shape.Wires[0]
             points = path_wire.discretize(Number=num_sections)
 
-            # Calculate tangency vectors for path orientation
             for i in range(num_sections):
                 if i == 0:
                     t_vec = points[1] - points[0]
@@ -49,12 +148,9 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
                     t_vec = points[i+1] - points[i-1]
                 t_vec.normalize()
                 tangents.append(t_vec)
-        else:
-            App.Console.PrintWarning("Warning: Second selection is not a valid path. Defaulting to Straight Extrude.\n")
 
     if num_sections < 2: return
 
-    # Safe math environment for eval()
     safe_env = {
         "math": math, "sin": math.sin, "cos": math.cos, "tan": math.tan,
         "pi": math.pi, "e": math.e, "pow": pow, "abs": abs,
@@ -65,27 +161,12 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
     created_sketches = []
 
     for i in range(num_sections):
-        # Base linear progression (0.0 to 1.0)
         t = float(i) / (num_sections - 1)
-        
-        # --- EASING LOGIC ---
-        # Remap 't' for the twist angle to create acceleration/deceleration
-        if twist_easing == "Ease In (Quad)":
-            twist_t = t * t
-        elif twist_easing == "Ease Out (Quad)":
-            twist_t = 1.0 - (1.0 - t) * (1.0 - t)
-        elif twist_easing == "Ease In-Out (Smoothstep)":
-            twist_t = t * t * (3.0 - 2.0 * t)
-        elif twist_easing == "Ease In-Out (Sine)":
-            twist_t = 0.5 * (1.0 - math.cos(math.pi * t))
-        else: # Linear
-            twist_t = t
+        twist_t = get_twist_t(t, twist_easing)
 
-        # Apply eased time to rotation, but keep height linear
         angle = twist_t * total_angle
         z = t * total_height if not is_path_mode else 0.0
 
-        # 1. Evaluate the scaling equation (using linear t so scale matches height)
         local_env = safe_env.copy()
         local_env["t"] = t
         local_env["z"] = z
@@ -98,16 +179,13 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
 
         scale_factor = max(0.001, float(scale_factor))
 
-        # 2 & 3. Create a live Parametric Clone
         new_sketch = Draft.make_clone(profile_obj)
         mode_label = "PathSweep" if is_path_mode else "EqTwist"
         new_sketch.Label = f"{profile_obj.Label}_{mode_label}_{i+1}"
 
-        # Apply scaling parametrically
         if hasattr(new_sketch, "Scale"):
             new_sketch.Scale = App.Vector(scale_factor, scale_factor, 1.0)
 
-        # 4. Placement Logic
         if is_path_mode:
             point = points[i]
             tangent = tangents[i]
@@ -135,7 +213,6 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
             active_body.addObject(new_sketch)
         created_sketches.append(new_sketch)
 
-    # 5. Loft Generation
     if not sketches_only:
         loft_label = f"SmartLoft_{profile_obj.Label}"
         objects_to_hide = created_sketches + [profile_obj]
@@ -158,14 +235,17 @@ def generate_smart_twist(total_height=120.0, total_angle=360.0, num_sections=12,
 # GUI LOGIC (Native Task Panel)
 # ==========================================
 class SmartTwistTaskPanel:
-    def __init__(self):
+    def __init__(self, profile_obj, path_obj):
+        self.profile_obj = profile_obj
+        self.path_obj = path_obj
+
         self.form = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.form)
 
         instruction_text = (
-            "<b>1.</b> Select Profile Sketch.<br>"
-            "<b>2.</b> (Optional) Ctrl+click Path Sketch.<br>"
-            "<b>3.</b> Set parameters below."
+            "<b>1.</b> Set parameters below.<br>"
+            "<b>2.</b> View live preview in the 3D window.<br>"
+            "<b>3.</b> Click OK to apply or Cancel to revert."
         )
         layout.addWidget(QtWidgets.QLabel(instruction_text))
 
@@ -177,6 +257,7 @@ class SmartTwistTaskPanel:
         self.height_spin.setValue(100.0)
         self.height_spin.setSuffix(" mm")
         self.height_spin.setToolTip("Ignored if a Path sketch is selected.")
+        self.height_spin.setKeyboardTracking(False)
         form_layout.addRow("Total Height:", self.height_spin)
 
         # Twist Angle
@@ -184,9 +265,10 @@ class SmartTwistTaskPanel:
         self.angle_spin.setRange(-3600.0, 3600.0)
         self.angle_spin.setValue(360.0)
         self.angle_spin.setSuffix(" °")
+        self.angle_spin.setKeyboardTracking(False)
         form_layout.addRow("Total Twist Angle:", self.angle_spin)
         
-        # --- NEW: Twist Easing ---
+        # Twist Easing
         self.easing_combo = QtWidgets.QComboBox()
         self.easing_combo.addItems([
             "Linear", 
@@ -202,12 +284,12 @@ class SmartTwistTaskPanel:
         self.sections_spin = QtWidgets.QSpinBox()
         self.sections_spin.setRange(2, 500)
         self.sections_spin.setValue(24)
+        self.sections_spin.setKeyboardTracking(False)
         form_layout.addRow("Number of Sections:", self.sections_spin)
 
-        # Equation (Editable Dropdown with Tooltipped Presets)
+        # Equation
         self.equation_input = QtWidgets.QComboBox()
         self.equation_input.setEditable(True)
-
         presets = [
             ("1.0 + cos(t * 2 * pi) * 0.5", "1 Wave: Fat at start, skinny in middle, fat at end"),
             ("1.0 + cos(t * 4 * pi) * 0.5", "2 Waves: Creates two skinny pinch points"),
@@ -216,7 +298,6 @@ class SmartTwistTaskPanel:
             ("1.0 + (t * 0.5)",             "Linear Flare: Gradually gets wider towards the end"),
             ("1.0",                         "No Scale: Straight extrusion")
         ]
-
         for index, (formula, tooltip) in enumerate(presets):
             self.equation_input.addItem(formula)
             self.equation_input.setItemData(index, tooltip, Qt.ToolTipRole)
@@ -231,33 +312,80 @@ class SmartTwistTaskPanel:
         form_layout.addRow("", self.sketches_only_cb)
 
         layout.addLayout(form_layout)
-
-        # Action Button
-        self.btn_gen = QtWidgets.QPushButton("Generate")
-        self.btn_gen.setStyleSheet("font-weight: bold; padding: 10px;")
-        self.btn_gen.clicked.connect(self.generate)
-        layout.addWidget(self.btn_gen)
-
         layout.addStretch()
 
-    def generate(self):
-        generate_smart_twist(
-            self.height_spin.value(),
-            self.angle_spin.value(),
-            self.sections_spin.value(),
-            self.equation_input.currentText(),
-            self.easing_combo.currentText(),     # Added easing argument
-            self.sketches_only_cb.isChecked()
-        )
+        # Connect Signals for Live Update
+        self.height_spin.valueChanged.connect(self.update_preview)
+        self.angle_spin.valueChanged.connect(self.update_preview)
+        self.easing_combo.currentIndexChanged.connect(self.update_preview)
+        self.sections_spin.valueChanged.connect(self.update_preview)
+        self.equation_input.editTextChanged.connect(self.update_preview)
+        self.equation_input.currentIndexChanged.connect(self.update_preview)
+        self.sketches_only_cb.toggled.connect(self.update_preview)
+
+        # --- PREVIEW SETUP ---
+        App.ActiveDocument.openTransaction("Twist Preview")
+        self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "TwistPreview")
+        self.profile_obj.Visibility = False
+        self.update_preview()
+
+    def update_preview(self, *args):
+        height = self.height_spin.value()
+        angle = self.angle_spin.value()
+        sections = self.sections_spin.value()
+        equation = self.equation_input.currentText()
+        easing = self.easing_combo.currentText()
+        sketches_only = self.sketches_only_cb.isChecked()
+
+        try:
+            new_shape = calculate_twist_preview_shape(
+                self.profile_obj, self.path_obj, 
+                height, angle, sections, equation, easing, sketches_only
+            )
+            self.preview_obj.Shape = new_shape
+            App.ActiveDocument.recompute()
+        except Exception as e:
+            App.Console.PrintWarning(f"Preview calculation error: {e}\n")
 
     def getStandardButtons(self):
-        return QtWidgets.QDialogButtonBox.Close.value
+        return (QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel).value
 
-    def reject(self):
+    def accept(self):
+        # 1. Revert the preview transaction (removes preview_obj, restores visibility)
+        App.ActiveDocument.abortTransaction()
+        
+        # 2. Extract final values
+        height = self.height_spin.value()
+        angle = self.angle_spin.value()
+        sections = self.sections_spin.value()
+        equation = self.equation_input.currentText()
+        easing = self.easing_combo.currentText()
+        sketches_only = self.sketches_only_cb.isChecked()
+
+        # 3. Build the actual Parametric FreeCAD tree
+        generate_smart_twist(
+            self.profile_obj, self.path_obj, 
+            height, angle, sections, equation, easing, sketches_only
+        )
         Gui.Control.closeDialog()
 
+    def reject(self):
+        App.ActiveDocument.abortTransaction()
+        Gui.Control.closeDialog()
+
+
+# ==========================================
+# LAUNCHER
+# ==========================================
 if Gui.Control.activeDialog():
     Gui.Control.closeDialog()
 
-panel = SmartTwistTaskPanel()
-Gui.Control.showDialog(panel)
+sel = Gui.Selection.getSelection()
+if not sel or not hasattr(sel[0], "TypeId") or "Sketcher::SketchObject" not in sel[0].TypeId:
+    App.Console.PrintError("Error: The first selected object must be a Sketch (Profile).\n")
+else:
+    prof_obj = sel[0]
+    pth_obj = sel[1] if len(sel) >= 2 else None
+
+    panel = SmartTwistTaskPanel(prof_obj, pth_obj)
+    Gui.Control.showDialog(panel)
