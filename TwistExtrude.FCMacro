@@ -28,13 +28,13 @@ def apply_dynamic_fillet(wire, radius):
     r = max(0.05, radius)
     try:
         inset = wire.makeOffset2D(-r, join=1)
-        if not inset or not inset.Wires: 
+        if not inset or not inset.Wires:
             return wire
-        
+
         outset = inset.Wires[0].makeOffset2D(r, join=0)
-        if not outset or not outset.Wires: 
+        if not outset or not outset.Wires:
             return wire
-            
+
         return outset.Wires[0]
     except Exception:
         return wire
@@ -61,13 +61,13 @@ def calculate_twist_shape(profile_obj, path_obj, total_height, total_angle, num_
             t_vec.normalize()
             tangents.append(t_vec)  # Fixed: was 'tangent.append'
 
-    if num_sections < 2: 
+    if num_sections < 2:
         return Part.makeCompound([])
 
     base_shape = profile_obj.Shape
     if not base_shape.Wires:
         return Part.makeCompound([])
-    
+
     base_wire = base_shape.Wires[0].copy()
     section_wires = []
 
@@ -80,7 +80,7 @@ def calculate_twist_shape(profile_obj, path_obj, total_height, total_angle, num_
     for i in range(num_sections):
         t = float(i) / (num_sections - 1)
         twist_t = get_twist_t(t, twist_easing)
-        
+
         angle = twist_t * total_angle
         z = t * total_height if not is_path_mode else 0.0
 
@@ -91,11 +91,11 @@ def calculate_twist_shape(profile_obj, path_obj, total_height, total_angle, num_
         try:
             scale_factor = eval(equation_str, {"__builtins__": {}}, local_env)
             scale_factor = max(0.001, float(scale_factor))
-            
+
             fillet_r = eval(fillet_equation_str, {"__builtins__": {}}, local_env)
             fillet_r = max(0.05, float(fillet_r))
         except Exception:
-            scale_factor = 1.0 
+            scale_factor = 1.0
             fillet_r = 0.0
 
         if is_path_mode:
@@ -121,9 +121,9 @@ def calculate_twist_shape(profile_obj, path_obj, total_height, total_angle, num_
 
         mat = new_placement.Matrix
         scale_mat = App.Matrix()
-        scale_mat.scale(scale_factor, scale_factor, scale_factor) 
+        scale_mat.scale(scale_factor, scale_factor, scale_factor)
         final_mat = mat.multiply(scale_mat)
-        
+
         w = w.transformShape(final_mat)
         section_wires.append(w)
 
@@ -168,33 +168,33 @@ def create_smart_twist_feature(profile_obj, path_obj, total_height, total_angle,
     # 1. Create a Custom Parametric Feature
     feat_name = f"SmartTwist_{profile_obj.Label}"
     obj = doc.addObject("Part::FeaturePython", feat_name)
-    
+
     # 2. Add Properties that link to the Sketch
     obj.addProperty("App::PropertyLinkGlobal", "Profile", "Twist Parameters", "Base profile sketch")
     obj.Profile = profile_obj
-    
+
     obj.addProperty("App::PropertyLinkGlobal", "Path", "Twist Parameters", "Path sketch")
-    if path_obj: 
+    if path_obj:
         obj.Path = path_obj
-        
+
     obj.addProperty("App::PropertyDistance", "TotalHeight", "Twist Parameters", "Total Height")
     obj.TotalHeight = total_height
-    
+
     obj.addProperty("App::PropertyAngle", "TotalAngle", "Twist Parameters", "Total Twist Angle")
     obj.TotalAngle = total_angle
-    
+
     obj.addProperty("App::PropertyInteger", "NumSections", "Twist Parameters", "Number of intermediate sections")
     obj.NumSections = num_sections
-    
+
     obj.addProperty("App::PropertyString", "ScaleEquation", "Twist Parameters", "Scale Formula")
     obj.ScaleEquation = equation_str
-    
+
     obj.addProperty("App::PropertyString", "FilletEquation", "Twist Parameters", "Fillet Formula")
     obj.FilletEquation = fillet_equation_str
-    
+
     obj.addProperty("App::PropertyString", "TwistEasing", "Twist Parameters", "Twist Easing type")
     obj.TwistEasing = twist_easing
-    
+
     obj.addProperty("App::PropertyBool", "SketchesOnly", "Twist Parameters", "Generate wires only (no loft)")
     obj.SketchesOnly = sketches_only
 
@@ -252,13 +252,13 @@ class SmartTwistTaskPanel:
         self.angle_spin.setSuffix(" °")
         self.angle_spin.setKeyboardTracking(False)
         form_layout.addRow("Total Twist Angle:", self.angle_spin)
-        
+
         # Twist Easing
         self.easing_combo = QtWidgets.QComboBox()
         self.easing_combo.addItems([
-            "Linear", 
-            "Ease In (Quad)", 
-            "Ease Out (Quad)", 
+            "Linear",
+            "Ease In (Quad)",
+            "Ease Out (Quad)",
             "Ease In-Out (Smoothstep)",
             "Ease In-Out (Sine)"
         ])
@@ -345,7 +345,7 @@ class SmartTwistTaskPanel:
 
         try:
             new_shape = calculate_twist_shape(
-                self.profile_obj, self.path_obj, 
+                self.profile_obj, self.path_obj,
                 height, angle, sections, equation, fillet_eq, easing, sketches_only
             )
             self.preview_obj.Shape = new_shape
@@ -357,12 +357,9 @@ class SmartTwistTaskPanel:
         return (QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel).value
 
     def accept(self):
-        # 1. Abort the temporary preview to clean up the 3D view
         App.ActiveDocument.abortTransaction()
-        
-        # 2. Open a NEW transaction for the actual feature creation
         App.ActiveDocument.openTransaction("Create Smart Twist")
-        
+
         height = self.height_spin.value()
         angle = self.angle_spin.value()
         sections = self.sections_spin.value()
@@ -371,15 +368,13 @@ class SmartTwistTaskPanel:
         easing = self.easing_combo.currentText()
         sketches_only = self.sketches_only_cb.isChecked()
 
-        # 3. Generate the final parametric object
         create_smart_twist_feature(
-            self.profile_obj, self.path_obj, 
+            self.profile_obj, self.path_obj,
             height, angle, sections, equation, fillet_eq, easing, sketches_only
         )
-        
-        # 4. Commit the transaction so it registers in the Undo stack
+
         App.ActiveDocument.commitTransaction()
-        
+
         Gui.Control.closeDialog()
 
     def reject(self):
