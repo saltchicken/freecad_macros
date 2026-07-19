@@ -105,7 +105,7 @@ def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_ang
         # Apply transformation to the wire
         mat = new_placement.Matrix
         scale_mat = App.Matrix()
-        scale_mat.scale(scale_factor, scale_factor, 1.0)
+        scale_mat.scale(scale_factor, scale_factor, scale_factor) 
         final_mat = mat.multiply(scale_mat)
         
         w = base_wire.copy()
@@ -184,7 +184,7 @@ def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=
         new_sketch.Label = f"{profile_obj.Label}_{mode_label}_{i+1}"
 
         if hasattr(new_sketch, "Scale"):
-            new_sketch.Scale = App.Vector(scale_factor, scale_factor, 1.0)
+            new_sketch.Scale = App.Vector(scale_factor, scale_factor, scale_factor) 
 
         if is_path_mode:
             point = points[i]
