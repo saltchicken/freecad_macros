@@ -23,7 +23,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 
-def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0):
+def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0, fillet_radius=0.0):
     """
     Calculates and returns the resulting Shape of a patterned lattice applied to target_obj.
     No document side-effects occur here.
@@ -40,11 +40,9 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     # BOUNDARY FACE CALCULATION (For Area % Checks)
     # ---------------------------------------------------------
     def get_boundary_face(shape, border):
-        # 1. Get the 2D footprint of the object
         if shape.ShapeType in ["Face", "Wire"]:
             base_face = shape
         else:
-            # For 3D solids, take a slice through the horizontal middle
             z_mid = (bbox.ZMax + bbox.ZMin) / 2.0
             plane = Part.makePlane((bbox.XMax - bbox.XMin) + 200, (bbox.YMax - bbox.YMin) + 200,
                                    App.Vector(bbox.XMin - 100, bbox.YMin - 100, z_mid), App.Vector(0,0,1))
@@ -53,21 +51,18 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             if not cross_section.Edges:
                 return None
                 
-            # Use DraftGeomUtils to sort the raw section edges into contiguous wires
             wires = DraftGeomUtils.findWires(cross_section.Edges)
             closed_wires = [w for w in wires if w.isClosed()]
             if not closed_wires: 
                 return None
                 
             try:
-                # Sort wires by length (longest first) to guarantee we grab the outer perimeter
                 closed_wires.sort(key=lambda w: w.Length, reverse=True)
                 base_face = Part.Face(closed_wires[0])
             except Exception as e:
                 App.Console.PrintWarning(f"Could not create face from cross section: {e}\n")
                 return None
                     
-        # 2. Offset the 2D footprint inward to create the margin limit
         try:
             if border > 0.0:
                 offset_shape = base_face.makeOffset2D(-border)
@@ -80,7 +75,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             else:
                 offset_shape = base_face
 
-            # 3. Move to bottom Z
             if offset_shape and not offset_shape.isNull():
                 current_z = offset_shape.BoundBox.ZMin
                 offset_shape.translate(App.Vector(0, 0, z_min_line - current_z))
@@ -91,19 +85,16 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             
         return None
 
-    # Generate Boundary elements
     boundary_face = get_boundary_face(target_shape, border_size)
     margin_volume = None
     
     if boundary_face:
-        # Extrude straight up (prevents Z-shrink) to create our 3D boolean volume
         margin_volume = boundary_face.extrude(App.Vector(0, 0, z_max_line - z_min_line))
     else:
         if border_size > 0.0:
             App.Console.PrintWarning("Border margin calculation failed. Returning original shape.\n")
             return target_shape.copy() if mode == "cut" else Part.makeCompound([])
 
-    # Helper for fast Vertex checks (Used for 100% threshold or if 2D boolean fails)
     def is_point_inside(px, py):
         line = Part.makeLine(App.Vector(px, py, z_min_line), App.Vector(px, py, z_max_line))
         if margin_volume:
@@ -111,18 +102,15 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         else:
             return line.distToShape(target_shape)[0] <= 1e-4
 
-    # Helper to check if a tile meets the area visibility requirements
     def is_tile_valid(tile_face, test_pts):
         if inclusion_threshold <= 0.0:
             return True
             
-        # If set to 100%, fast vertex checks are much more efficient
         if inclusion_threshold >= 99.9:
             for pt in test_pts:
                 if not is_point_inside(pt.x, pt.y): return False
             return True
             
-        # Percentage Area Check via 2D Boolean
         if boundary_face:
             try:
                 intersect = tile_face.common(boundary_face)
@@ -130,9 +118,8 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                     ratio = intersect.Area / tile_face.Area
                     return ratio >= (inclusion_threshold / 100.0)
             except Exception:
-                pass # Proceed to fallback if topological boolean fails
+                pass 
                 
-        # Fallback: Count percentage of vertices inside the area
         pts_to_check = test_pts[:-1] if (len(test_pts) > 1 and test_pts[0].isEqual(test_pts[-1], 1e-5)) else test_pts
         if not pts_to_check: return False
         inside_count = sum(1 for p in pts_to_check if is_point_inside(p.x, p.y))
@@ -256,10 +243,36 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         else:
             return Part.makeCompound([])
 
-    # Fuse and Extrude the grid into 3D pillars
-    grid_compound = Part.makeCompound(pattern_faces)
+    # ---------------------------------------------------------
+    # EXTRUDE AND FILLET
+    # ---------------------------------------------------------
     z_height = (z_max_line - z_min_line)
-    pillars = grid_compound.extrude(App.Vector(0, 0, z_height))
+    pillar_solids = []
+
+    for tile_face in pattern_faces:
+        pillar = tile_face.extrude(App.Vector(0, 0, z_height))
+        
+        # Only attempt to fillet if radius > 0 and it's a shape with sharp corners
+        if fillet_radius > 0.0 and "Circle" not in pattern:
+            edges_to_fillet = []
+            for e in pillar.Edges:
+                bb = e.BoundBox
+                # Identify purely vertical edges (Z variance is high, X/Y variance is near zero)
+                if (bb.XMax - bb.XMin) < 1e-4 and (bb.YMax - bb.YMin) < 1e-4 and (bb.ZMax - bb.ZMin) > 1e-4:
+                    edges_to_fillet.append(e)
+            
+            if edges_to_fillet:
+                try:
+                    filleted_pillar = pillar.makeFillet(fillet_radius, edges_to_fillet)
+                    if not filleted_pillar.isNull():
+                        pillar = filleted_pillar
+                except Exception:
+                    # If fillet fails (e.g., radius is too large for the polygon edge), fallback to unfilleted
+                    pass
+
+        pillar_solids.append(pillar)
+
+    pillars = Part.makeCompound(pillar_solids)
 
     # ---------------------------------------------------------
     # APPLY THE MARGIN BOOLEAN CUT
@@ -316,6 +329,15 @@ class PatternTaskPanel:
         self.gap_spin.setToolTip("The space between tiles (creates the lattice walls).")
         self.gap_spin.setKeyboardTracking(False)
         form_layout.addRow("Gap Size:", self.gap_spin)
+
+        # Fillet Size
+        self.fillet_spin = QtWidgets.QDoubleSpinBox()
+        self.fillet_spin.setRange(0.0, 500.0)
+        self.fillet_spin.setValue(0.0)
+        self.fillet_spin.setSuffix(" mm")
+        self.fillet_spin.setToolTip("Radius to round the interior corners. (Set to 0 to disable). If radius is too large for the tile, corners stay sharp.")
+        self.fillet_spin.setKeyboardTracking(False)
+        form_layout.addRow("Corner Fillet:", self.fillet_spin)
         
         # Border Size
         self.border_spin = QtWidgets.QDoubleSpinBox()
@@ -367,6 +389,7 @@ class PatternTaskPanel:
         self.pattern_combo.currentIndexChanged.connect(self.update_preview)
         self.radius_spin.valueChanged.connect(self.update_preview)
         self.gap_spin.valueChanged.connect(self.update_preview)
+        self.fillet_spin.valueChanged.connect(self.update_preview)
         self.border_spin.valueChanged.connect(self.update_preview)
         self.threshold_spin.valueChanged.connect(self.update_preview)
         self.offset_x_spin.valueChanged.connect(self.update_preview)
@@ -383,6 +406,7 @@ class PatternTaskPanel:
         pattern = self.pattern_combo.currentText()
         radius = self.radius_spin.value()
         gap = self.gap_spin.value()
+        fillet = self.fillet_spin.value()
         border = self.border_spin.value()
         threshold = self.threshold_spin.value()
         offset_x = self.offset_x_spin.value()
@@ -391,7 +415,7 @@ class PatternTaskPanel:
 
         try:
             new_shape = calculate_pattern_shape(
-                self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, threshold, border
+                self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, threshold, border, fillet
             )
             self.preview_obj.Shape = new_shape
             App.ActiveDocument.recompute()
