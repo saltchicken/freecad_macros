@@ -23,7 +23,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 
-def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, strict_mode=False, border_size=0.0):
+def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0):
     """
     Calculates and returns the resulting Shape of a patterned lattice applied to target_obj.
     No document side-effects occur here.
@@ -37,9 +37,9 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     target_shape = target_obj.Shape
 
     # ---------------------------------------------------------
-    # BORDER MARGIN CALCULATION (2.5D Cross-Section Method)
+    # BOUNDARY FACE CALCULATION (For Area % Checks)
     # ---------------------------------------------------------
-    def get_margin_volume(shape, border):
+    def get_boundary_face(shape, border):
         # 1. Get the 2D footprint of the object
         if shape.ShapeType in ["Face", "Wire"]:
             base_face = shape
@@ -69,42 +69,74 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                     
         # 2. Offset the 2D footprint inward to create the margin limit
         try:
-            offset_shape = base_face.makeOffset2D(-border)
-            if isinstance(offset_shape, list) and offset_shape:
-                offset_shape = offset_shape[0]
-                
-            if offset_shape and not offset_shape.isNull():
-                if offset_shape.ShapeType == "Wire":
-                    offset_shape = Part.Face(offset_shape)
+            if border > 0.0:
+                offset_shape = base_face.makeOffset2D(-border)
+                if isinstance(offset_shape, list) and offset_shape:
+                    offset_shape = offset_shape[0]
                     
-                # 3. Move to bottom Z and extrude straight up (prevents Z-shrink)
+                if offset_shape and not offset_shape.isNull():
+                    if offset_shape.ShapeType == "Wire":
+                        offset_shape = Part.Face(offset_shape)
+            else:
+                offset_shape = base_face
+
+            # 3. Move to bottom Z
+            if offset_shape and not offset_shape.isNull():
                 current_z = offset_shape.BoundBox.ZMin
                 offset_shape.translate(App.Vector(0, 0, z_min_line - current_z))
-                return offset_shape.extrude(App.Vector(0, 0, z_max_line - z_min_line))
+                return offset_shape
         except Exception as e:
             App.Console.PrintWarning(f"Margin offset error: {e}\n")
             return None
             
         return None
 
-    # Generate Margin Volume if requested
+    # Generate Boundary elements
+    boundary_face = get_boundary_face(target_shape, border_size)
     margin_volume = None
-    if border_size > 0.0:
-        margin_volume = get_margin_volume(target_shape, border_size)
-        if not margin_volume:
-            App.Console.PrintWarning("Border margin calculation failed (border might be too thick). Returning original shape.\n")
-            if mode == "cut":
-                return target_shape.copy()
-            else:
-                return Part.makeCompound([])
+    
+    if boundary_face:
+        # Extrude straight up (prevents Z-shrink) to create our 3D boolean volume
+        margin_volume = boundary_face.extrude(App.Vector(0, 0, z_max_line - z_min_line))
+    else:
+        if border_size > 0.0:
+            App.Console.PrintWarning("Border margin calculation failed. Returning original shape.\n")
+            return target_shape.copy() if mode == "cut" else Part.makeCompound([])
 
-    # Helper for Strict Mode: Checks if a vertical line intersects the permitted area
+    # Helper for fast Vertex checks (Used for 100% threshold or if 2D boolean fails)
     def is_point_inside(px, py):
         line = Part.makeLine(App.Vector(px, py, z_min_line), App.Vector(px, py, z_max_line))
         if margin_volume:
             return line.distToShape(margin_volume)[0] <= 1e-4
         else:
             return line.distToShape(target_shape)[0] <= 1e-4
+
+    # Helper to check if a tile meets the area visibility requirements
+    def is_tile_valid(tile_face, test_pts):
+        if inclusion_threshold <= 0.0:
+            return True
+            
+        # If set to 100%, fast vertex checks are much more efficient
+        if inclusion_threshold >= 99.9:
+            for pt in test_pts:
+                if not is_point_inside(pt.x, pt.y): return False
+            return True
+            
+        # Percentage Area Check via 2D Boolean
+        if boundary_face:
+            try:
+                intersect = tile_face.common(boundary_face)
+                if tile_face.Area > 0:
+                    ratio = intersect.Area / tile_face.Area
+                    return ratio >= (inclusion_threshold / 100.0)
+            except Exception:
+                pass # Proceed to fallback if topological boolean fails
+                
+        # Fallback: Count percentage of vertices inside the area
+        pts_to_check = test_pts[:-1] if (len(test_pts) > 1 and test_pts[0].isEqual(test_pts[-1], 1e-5)) else test_pts
+        if not pts_to_check: return False
+        inside_count = sum(1 for p in pts_to_check if is_point_inside(p.x, p.y))
+        return (inside_count / len(pts_to_check)) >= (inclusion_threshold / 100.0)
 
     # ---------------------------------------------------------
     # VORONOI GENERATION
@@ -152,18 +184,11 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                 inset_pts.append(p + vec * move_dist)
             
             inset_pts.append(inset_pts[0]) 
-            
-            if strict_mode:
-                valid_tile = True
-                for p in inset_pts:
-                    if not is_point_inside(p.x, p.y):
-                        valid_tile = False
-                        break
-                if not valid_tile:
-                    continue
-            
             polygon = Part.makePolygon(inset_pts)
-            pattern_faces.append(Part.Face(polygon))
+            tile_face = Part.Face(polygon)
+            
+            if is_tile_valid(tile_face, inset_pts):
+                pattern_faces.append(tile_face)
 
     # ---------------------------------------------------------
     # STANDARD GEOMETRIC GENERATION
@@ -214,22 +239,16 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                         angle = math.radians(i * 45)
                         test_pts.append(App.Vector(x + tile_radius * math.cos(angle), y + tile_radius * math.sin(angle), z))
 
-                if strict_mode:
-                    if not is_point_inside(x, y): continue
-                    valid_tile = True
-                    for pt in test_pts:
-                        if not is_point_inside(pt.x, pt.y):
-                            valid_tile = False
-                            break
-                    if not valid_tile: continue
-
                 if pattern in ["Hexagon", "Square"]:
                     test_pts.append(test_pts[0])
                     polygon = Part.makePolygon(test_pts)
-                    pattern_faces.append(Part.Face(polygon))
+                    tile_face = Part.Face(polygon)
                 elif "Circle" in pattern:
                     circle_edge = Part.makeCircle(tile_radius, App.Vector(x, y, z), App.Vector(0, 0, 1))
-                    pattern_faces.append(Part.Face(Part.Wire(circle_edge)))
+                    tile_face = Part.Face(Part.Wire(circle_edge))
+
+                if is_tile_valid(tile_face, test_pts):
+                    pattern_faces.append(tile_face)
 
     if not pattern_faces:
         if mode == "cut":
@@ -307,6 +326,15 @@ class PatternTaskPanel:
         self.border_spin.setKeyboardTracking(False)
         form_layout.addRow("Border Margin:", self.border_spin)
 
+        # Minimum Tile Visibility (Threshold)
+        self.threshold_spin = QtWidgets.QDoubleSpinBox()
+        self.threshold_spin.setRange(0.0, 100.0)
+        self.threshold_spin.setValue(0.0)
+        self.threshold_spin.setSuffix(" %")
+        self.threshold_spin.setToolTip("Only generate tiles if this % of their area fits inside the boundary.\n0% = Keep all touching.\n100% = Strict full tiles only.")
+        self.threshold_spin.setKeyboardTracking(False)
+        form_layout.addRow("Min Tile Visibility:", self.threshold_spin)
+
         # X Offset
         self.offset_x_spin = QtWidgets.QDoubleSpinBox()
         self.offset_x_spin.setRange(-1000.0, 1000.0)
@@ -332,12 +360,6 @@ class PatternTaskPanel:
         self.operation_combo.setToolTip("Cut removes the pillars. Common keeps the pillars.")
         form_layout.addRow("Operation:", self.operation_combo)
 
-        # Strict Mode Toggle
-        self.strict_check = QtWidgets.QCheckBox("Strict Full Tiles Only")
-        self.strict_check.setChecked(False)
-        self.strict_check.setToolTip("Only generate tiles that fit completely inside the object's boundaries.")
-        form_layout.addRow("", self.strict_check)
-
         layout.addLayout(form_layout)
         layout.addStretch()
 
@@ -346,10 +368,10 @@ class PatternTaskPanel:
         self.radius_spin.valueChanged.connect(self.update_preview)
         self.gap_spin.valueChanged.connect(self.update_preview)
         self.border_spin.valueChanged.connect(self.update_preview)
+        self.threshold_spin.valueChanged.connect(self.update_preview)
         self.offset_x_spin.valueChanged.connect(self.update_preview)
         self.offset_y_spin.valueChanged.connect(self.update_preview)
         self.operation_combo.currentIndexChanged.connect(self.update_preview)
-        self.strict_check.toggled.connect(self.update_preview)
 
         # --- PREVIEW SETUP ---
         App.ActiveDocument.openTransaction("Pattern Preview")
@@ -362,14 +384,14 @@ class PatternTaskPanel:
         radius = self.radius_spin.value()
         gap = self.gap_spin.value()
         border = self.border_spin.value()
+        threshold = self.threshold_spin.value()
         offset_x = self.offset_x_spin.value()
         offset_y = self.offset_y_spin.value()
         mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
-        strict_mode = self.strict_check.isChecked()
 
         try:
             new_shape = calculate_pattern_shape(
-                self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, strict_mode, border
+                self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, threshold, border
             )
             self.preview_obj.Shape = new_shape
             App.ActiveDocument.recompute()
