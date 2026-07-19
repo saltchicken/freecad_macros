@@ -11,7 +11,7 @@ from SharedLib import MacroShared
 importlib.reload(MacroShared)
 
 # ==========================================
-# HELPER MATH
+# HELPER MATH & GEOMETRY
 # ==========================================
 def get_twist_t(t, twist_easing):
     """Calculates the eased value of 't' for the twist angle."""
@@ -25,10 +25,28 @@ def get_twist_t(t, twist_easing):
         return 0.5 * (1.0 - math.cos(math.pi * t))
     return t
 
+def apply_dynamic_fillet(wire, radius):
+    """Applies a 2D fillet to an arbitrary wire by insetting sharply, then outsetting roundly."""
+    r = max(0.05, radius) # Force a minimum topology offset
+    try:
+        # Inset with sharp corners (join=1 is Intersection)
+        inset = wire.makeOffset2D(-r, join=1)
+        if not inset or not inset.Wires: 
+            return wire
+        
+        # Outset with round corners (join=0 is Arc/Fillet)
+        outset = inset.Wires[0].makeOffset2D(r, join=0)
+        if not outset or not outset.Wires: 
+            return wire
+            
+        return outset.Wires[0]
+    except Exception:
+        return wire
+
 # ==========================================
 # PREVIEW LOGIC (Fast In-Memory Generation)
 # ==========================================
-def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_angle, num_sections, equation_str, twist_easing, sketches_only):
+def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_angle, num_sections, equation_str, fillet_equation_str, twist_easing, sketches_only):
     """
     Calculates a lightweight Part.Shape for the live preview. 
     Does not create or mutate parametric FreeCAD objects.
@@ -81,8 +99,12 @@ def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_ang
         try:
             scale_factor = eval(equation_str, {"__builtins__": {}}, local_env)
             scale_factor = max(0.001, float(scale_factor))
+            
+            fillet_r = eval(fillet_equation_str, {"__builtins__": {}}, local_env)
+            fillet_r = max(0.05, float(fillet_r))
         except Exception:
             scale_factor = 1.0 # Gracefully degrade on syntax errors while typing
+            fillet_r = 0.0
 
         if is_path_mode:
             point = points[i]
@@ -102,13 +124,16 @@ def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_ang
         else:
             new_placement = App.Placement(App.Vector(0, 0, z), App.Rotation(App.Vector(0, 0, 1), angle))
 
+        # Apply offset trick for dynamic fillet
+        w = base_wire.copy()
+        w = apply_dynamic_fillet(w, fillet_r)
+
         # Apply transformation to the wire
         mat = new_placement.Matrix
         scale_mat = App.Matrix()
         scale_mat.scale(scale_factor, scale_factor, scale_factor) 
         final_mat = mat.multiply(scale_mat)
         
-        w = base_wire.copy()
         w = w.transformShape(final_mat)
         section_wires.append(w)
 
@@ -126,7 +151,7 @@ def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_ang
 # TRUE GENERATION LOGIC
 # ==========================================
 @MacroShared.with_undo("Twist Extrude")
-def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", twist_easing="Linear", sketches_only=False):
+def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", fillet_equation_str="0.0", twist_easing="Linear", sketches_only=False):
     doc = App.ActiveDocument
     if doc is None: return
 
@@ -158,7 +183,7 @@ def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=
     }
 
     active_body = MacroShared.get_active_body(profile_obj)
-    created_sketches = []
+    created_features = []
 
     for i in range(num_sections):
         t = float(i) / (num_sections - 1)
@@ -173,18 +198,17 @@ def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=
 
         try:
             scale_factor = eval(equation_str, {"__builtins__": {}}, local_env)
+            scale_factor = max(0.001, float(scale_factor))
+            
+            fillet_r = eval(fillet_equation_str, {"__builtins__": {}}, local_env)
+            fillet_r = max(0.0, float(fillet_r))
         except Exception as e:
             App.Console.PrintError(f"Math Evaluation Error at section {i+1}: {e}\n")
             return
 
-        scale_factor = max(0.001, float(scale_factor))
-
-        new_sketch = Draft.make_clone(profile_obj)
-        mode_label = "PathSweep" if is_path_mode else "EqTwist"
-        new_sketch.Label = f"{profile_obj.Label}_{mode_label}_{i+1}"
-
-        if hasattr(new_sketch, "Scale"):
-            new_sketch.Scale = App.Vector(scale_factor, scale_factor, scale_factor) 
+        # 1. Get base wire and apply dynamic 2D fillet
+        base_wire = profile_obj.Shape.Wires[0].copy()
+        filleted_wire = apply_dynamic_fillet(base_wire, fillet_r)
 
         if is_path_mode:
             point = points[i]
@@ -204,29 +228,37 @@ def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=
         else:
             new_placement = App.Placement(App.Vector(0, 0, z), App.Rotation(App.Vector(0, 0, 1), angle))
 
-        if hasattr(new_sketch, "MapMode") and new_sketch.MapMode != 'Deactivated':
-            new_sketch.AttachmentOffset = new_placement
-        else:
-            new_sketch.Placement = new_placement
+        # 2. Apply Scale and Placement directly to the geometry
+        mat = new_placement.Matrix
+        scale_mat = App.Matrix()
+        scale_mat.scale(scale_factor, scale_factor, scale_factor) 
+        final_mat = mat.multiply(scale_mat)
+        
+        final_wire = filleted_wire.transformShape(final_mat)
+
+        # 3. Bake into a Part Feature for the Additive Loft (replaces Draft.make_clone)
+        mode_label = "PathSweep" if is_path_mode else "EqTwist"
+        new_wire_obj = doc.addObject("Part::Feature", f"{profile_obj.Label}_{mode_label}_{i+1}")
+        new_wire_obj.Shape = final_wire
 
         if active_body:
-            active_body.addObject(new_sketch)
-        created_sketches.append(new_sketch)
+            active_body.addObject(new_wire_obj)
+        created_features.append(new_wire_obj)
 
     if not sketches_only:
         loft_label = f"SmartLoft_{profile_obj.Label}"
-        objects_to_hide = created_sketches + [profile_obj]
+        objects_to_hide = created_features + [profile_obj]
         if is_path_mode and path_obj:
             objects_to_hide.append(path_obj)
 
         MacroShared.build_additive_loft(
-            active_body, loft_label, created_sketches[0], created_sketches[1:], objects_to_hide
+            active_body, loft_label, created_features[0], created_features[1:], objects_to_hide
         )
 
         mode_text = "Path Sweep" if is_path_mode else "Straight Extrude"
         App.Console.PrintMessage(f"Successfully generated {mode_text} Loft!\n")
     else:
-        App.Console.PrintMessage(f"Successfully generated {num_sections} sketch layers (Loft skipped).\n")
+        App.Console.PrintMessage(f"Successfully generated {num_sections} wire layers (Loft skipped).\n")
 
     doc.recompute()
 
@@ -290,7 +322,7 @@ class SmartTwistTaskPanel:
         # Equation
         self.equation_input = QtWidgets.QComboBox()
         self.equation_input.setEditable(True)
-        presets = [
+        scale_presets = [
             ("1.0 + cos(t * 2 * pi) * 0.5", "1 Wave: Fat at start, skinny in middle, fat at end"),
             ("1.0 + cos(t * 4 * pi) * 0.5", "2 Waves: Creates two skinny pinch points"),
             ("1.0 + sin(t * pi) * 0.5",     "Middle Bulge: Skinny at start/end, fat in middle"),
@@ -298,17 +330,33 @@ class SmartTwistTaskPanel:
             ("1.0 + (t * 0.5)",             "Linear Flare: Gradually gets wider towards the end"),
             ("1.0",                         "No Scale: Straight extrusion")
         ]
-        for index, (formula, tooltip) in enumerate(presets):
+        for index, (formula, tooltip) in enumerate(scale_presets):
             self.equation_input.addItem(formula)
             self.equation_input.setItemData(index, tooltip, Qt.ToolTipRole)
 
         self.equation_input.setToolTip("Select a preset, hover for details, or type custom math.")
         form_layout.addRow("Scale Formula:", self.equation_input)
 
+        # Fillet Equation
+        self.fillet_input = QtWidgets.QComboBox()
+        self.fillet_input.setEditable(True)
+        fillet_presets = [
+            ("0.0", "No Fillet"),
+            ("2.0", "Constant 2mm fillet"),
+            ("2.0 * sin(t * pi)", "Pulse: 0mm at ends, 2mm in middle"),
+            ("5.0 * t", "Linear Increase: 0mm at start, 5mm at end")
+        ]
+        for index, (formula, tooltip) in enumerate(fillet_presets):
+            self.fillet_input.addItem(formula)
+            self.fillet_input.setItemData(index, tooltip, Qt.ToolTipRole)
+
+        self.fillet_input.setToolTip("Formula for dynamic fillet radius.")
+        form_layout.addRow("Fillet Formula:", self.fillet_input)
+
         # Sketches Only Toggle
-        self.sketches_only_cb = QtWidgets.QCheckBox("Generate Sketches Only (Skip Loft)")
+        self.sketches_only_cb = QtWidgets.QCheckBox("Generate Profiles Only (Skip Loft)")
         self.sketches_only_cb.setChecked(False)
-        self.sketches_only_cb.setToolTip("Generates scaled/rotated sketches without the Additive Loft.")
+        self.sketches_only_cb.setToolTip("Generates scaled/rotated/filleted wires without the Additive Loft.")
         form_layout.addRow("", self.sketches_only_cb)
 
         layout.addLayout(form_layout)
@@ -321,6 +369,8 @@ class SmartTwistTaskPanel:
         self.sections_spin.valueChanged.connect(self.update_preview)
         self.equation_input.editTextChanged.connect(self.update_preview)
         self.equation_input.currentIndexChanged.connect(self.update_preview)
+        self.fillet_input.editTextChanged.connect(self.update_preview)
+        self.fillet_input.currentIndexChanged.connect(self.update_preview)
         self.sketches_only_cb.toggled.connect(self.update_preview)
 
         # --- PREVIEW SETUP ---
@@ -334,13 +384,14 @@ class SmartTwistTaskPanel:
         angle = self.angle_spin.value()
         sections = self.sections_spin.value()
         equation = self.equation_input.currentText()
+        fillet_eq = self.fillet_input.currentText()
         easing = self.easing_combo.currentText()
         sketches_only = self.sketches_only_cb.isChecked()
 
         try:
             new_shape = calculate_twist_preview_shape(
                 self.profile_obj, self.path_obj, 
-                height, angle, sections, equation, easing, sketches_only
+                height, angle, sections, equation, fillet_eq, easing, sketches_only
             )
             self.preview_obj.Shape = new_shape
             App.ActiveDocument.recompute()
@@ -359,13 +410,14 @@ class SmartTwistTaskPanel:
         angle = self.angle_spin.value()
         sections = self.sections_spin.value()
         equation = self.equation_input.currentText()
+        fillet_eq = self.fillet_input.currentText()
         easing = self.easing_combo.currentText()
         sketches_only = self.sketches_only_cb.isChecked()
 
         # 3. Build the actual Parametric FreeCAD tree
         generate_smart_twist(
             self.profile_obj, self.path_obj, 
-            height, angle, sections, equation, easing, sketches_only
+            height, angle, sections, equation, fillet_eq, easing, sketches_only
         )
         Gui.Control.closeDialog()
 
