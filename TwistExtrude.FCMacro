@@ -4,7 +4,7 @@ import Part
 import Draft
 import math
 from PySide6 import QtWidgets
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 import importlib
 
 from SharedLib import MacroShared
@@ -67,7 +67,7 @@ def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_ang
             else:
                 t_vec = points[i+1] - points[i-1]
             t_vec.normalize()
-            tangents.append(t_vec)
+            tangent.append(t_vec)
 
     if num_sections < 2: 
         return Part.makeCompound([])
@@ -236,14 +236,29 @@ def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=
         
         final_wire = filleted_wire.transformShape(final_mat)
 
-        # 3. Bake into a Part Feature for the Additive Loft (replaces Draft.make_clone)
+        # 3. Bake into a Part Feature outside the body
         mode_label = "PathSweep" if is_path_mode else "EqTwist"
-        new_wire_obj = doc.addObject("Part::Feature", f"{profile_obj.Label}_{mode_label}_{i+1}")
-        new_wire_obj.Shape = final_wire
+        base_wire_obj = doc.addObject("Part::Feature", f"{profile_obj.Label}_{mode_label}_{i+1}_Base")
+        base_wire_obj.Shape = final_wire
+        base_wire_obj.Visibility = False
 
+        # Put the raw wires into a standard Group (Folder)
+        group_name = f"TwistProfiles_{profile_obj.Label}"
+        profile_group = doc.getObject(group_name)
+        if not profile_group:
+            profile_group = doc.addObject("App::DocumentObjectGroup", group_name)
+        
+        profile_group.addObject(base_wire_obj)
+
+        # 4. Bring it into the body legally using a SubShapeBinder
         if active_body:
-            active_body.addObject(new_wire_obj)
-        created_features.append(new_wire_obj)
+            binder = doc.addObject("PartDesign::SubShapeBinder", f"{profile_obj.Label}_{mode_label}_{i+1}")
+            binder.Support = [(base_wire_obj, '')]
+            binder.Visibility = False
+            active_body.addObject(binder)
+            created_features.append(binder) # Feed the binder to the loft, not the raw wire
+        else:
+            created_features.append(base_wire_obj)
 
     if not sketches_only:
         loft_label = f"SmartLoft_{profile_obj.Label}"
@@ -362,15 +377,24 @@ class SmartTwistTaskPanel:
         layout.addLayout(form_layout)
         layout.addStretch()
 
+        # --- TIMER SETUP (Debouncing) ---
+        self.preview_timer = QTimer(self.form)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(400) # Wait 400ms after typing stops
+        self.preview_timer.timeout.connect(self.update_preview)
+
         # Connect Signals for Live Update
         self.height_spin.valueChanged.connect(self.update_preview)
         self.angle_spin.valueChanged.connect(self.update_preview)
         self.easing_combo.currentIndexChanged.connect(self.update_preview)
         self.sections_spin.valueChanged.connect(self.update_preview)
-        self.equation_input.editTextChanged.connect(self.update_preview)
+        
+        # Connect text edits to the debouncer, not the immediate updater
+        self.equation_input.editTextChanged.connect(self.schedule_update)
         self.equation_input.currentIndexChanged.connect(self.update_preview)
-        self.fillet_input.editTextChanged.connect(self.update_preview)
+        self.fillet_input.editTextChanged.connect(self.schedule_update)
         self.fillet_input.currentIndexChanged.connect(self.update_preview)
+        
         self.sketches_only_cb.toggled.connect(self.update_preview)
 
         # --- PREVIEW SETUP ---
@@ -378,6 +402,10 @@ class SmartTwistTaskPanel:
         self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "TwistPreview")
         self.profile_obj.Visibility = False
         self.update_preview()
+
+    def schedule_update(self, *args):
+        """Restarts the timer whenever the user types, delaying the preview calculation."""
+        self.preview_timer.start()
 
     def update_preview(self, *args):
         height = self.height_spin.value()
