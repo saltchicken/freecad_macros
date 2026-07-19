@@ -357,7 +357,11 @@ class SmartTwistTaskPanel:
         return (QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel).value
 
     def accept(self):
+        # 1. Abort the temporary preview to clean up the 3D view
         App.ActiveDocument.abortTransaction()
+        
+        # 2. Open a NEW transaction for the actual feature creation
+        App.ActiveDocument.openTransaction("Create Smart Twist")
         
         height = self.height_spin.value()
         angle = self.angle_spin.value()
@@ -367,10 +371,15 @@ class SmartTwistTaskPanel:
         easing = self.easing_combo.currentText()
         sketches_only = self.sketches_only_cb.isChecked()
 
+        # 3. Generate the final parametric object
         create_smart_twist_feature(
             self.profile_obj, self.path_obj, 
             height, angle, sections, equation, fillet_eq, easing, sketches_only
         )
+        
+        # 4. Commit the transaction so it registers in the Undo stack
+        App.ActiveDocument.commitTransaction()
+        
         Gui.Control.closeDialog()
 
     def reject(self):
