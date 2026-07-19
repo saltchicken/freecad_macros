@@ -6,6 +6,9 @@ import random
 from PySide6 import QtWidgets
 import importlib
 
+# DraftGeomUtils is required to sort disconnected edges into wires
+import DraftGeomUtils
+
 # Attempt to load SciPy for Voronoi math
 try:
     from scipy.spatial import Voronoi
@@ -20,7 +23,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 
-def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, strict_mode=False):
+def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, strict_mode=False, border_size=0.0):
     """
     Calculates and returns the resulting Shape of a patterned lattice applied to target_obj.
     No document side-effects occur here.
@@ -33,10 +36,75 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     z_max_line = bbox.ZMax + 10
     target_shape = target_obj.Shape
 
-    # Helper for Strict Mode: Checks if a vertical line through (px, py) hits the object
+    # ---------------------------------------------------------
+    # BORDER MARGIN CALCULATION (2.5D Cross-Section Method)
+    # ---------------------------------------------------------
+    def get_margin_volume(shape, border):
+        # 1. Get the 2D footprint of the object
+        if shape.ShapeType in ["Face", "Wire"]:
+            base_face = shape
+        else:
+            # For 3D solids, take a slice through the horizontal middle
+            z_mid = (bbox.ZMax + bbox.ZMin) / 2.0
+            plane = Part.makePlane((bbox.XMax - bbox.XMin) + 200, (bbox.YMax - bbox.YMin) + 200,
+                                   App.Vector(bbox.XMin - 100, bbox.YMin - 100, z_mid), App.Vector(0,0,1))
+            cross_section = shape.section(plane)
+            
+            if not cross_section.Edges:
+                return None
+                
+            # Use DraftGeomUtils to sort the raw section edges into contiguous wires
+            wires = DraftGeomUtils.findWires(cross_section.Edges)
+            closed_wires = [w for w in wires if w.isClosed()]
+            if not closed_wires: 
+                return None
+                
+            try:
+                # Sort wires by length (longest first) to guarantee we grab the outer perimeter
+                closed_wires.sort(key=lambda w: w.Length, reverse=True)
+                base_face = Part.Face(closed_wires[0])
+            except Exception as e:
+                App.Console.PrintWarning(f"Could not create face from cross section: {e}\n")
+                return None
+                    
+        # 2. Offset the 2D footprint inward to create the margin limit
+        try:
+            offset_shape = base_face.makeOffset2D(-border)
+            if isinstance(offset_shape, list) and offset_shape:
+                offset_shape = offset_shape[0]
+                
+            if offset_shape and not offset_shape.isNull():
+                if offset_shape.ShapeType == "Wire":
+                    offset_shape = Part.Face(offset_shape)
+                    
+                # 3. Move to bottom Z and extrude straight up (prevents Z-shrink)
+                current_z = offset_shape.BoundBox.ZMin
+                offset_shape.translate(App.Vector(0, 0, z_min_line - current_z))
+                return offset_shape.extrude(App.Vector(0, 0, z_max_line - z_min_line))
+        except Exception as e:
+            App.Console.PrintWarning(f"Margin offset error: {e}\n")
+            return None
+            
+        return None
+
+    # Generate Margin Volume if requested
+    margin_volume = None
+    if border_size > 0.0:
+        margin_volume = get_margin_volume(target_shape, border_size)
+        if not margin_volume:
+            App.Console.PrintWarning("Border margin calculation failed (border might be too thick). Returning original shape.\n")
+            if mode == "cut":
+                return target_shape.copy()
+            else:
+                return Part.makeCompound([])
+
+    # Helper for Strict Mode: Checks if a vertical line intersects the permitted area
     def is_point_inside(px, py):
         line = Part.makeLine(App.Vector(px, py, z_min_line), App.Vector(px, py, z_max_line))
-        return line.distToShape(target_shape)[0] <= 1e-4
+        if margin_volume:
+            return line.distToShape(margin_volume)[0] <= 1e-4
+        else:
+            return line.distToShape(target_shape)[0] <= 1e-4
 
     # ---------------------------------------------------------
     # VORONOI GENERATION
@@ -46,22 +114,17 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             App.Console.PrintError("SciPy is missing. Cannot generate Voronoi pattern.\n")
             return target_obj.Shape.copy()
 
-        # Grid math for seed points
         dx = dy = 1.5 * step_radius
         cols = int((bbox.XMax - bbox.XMin) / dx) + 6
         rows = int((bbox.YMax - bbox.YMin) / dy) + 6
-
         seed_points = []
         
-        # Tie the random seed to the offsets so the organic pattern is 
-        # stable during live-preview tweaking, but can be "rolled" by shifting X/Y
         random.seed(hash((offset_x, offset_y)))
 
         for c in range(-4, cols + 4):
             for r in range(-4, rows + 4):
                 px = bbox.XMin + c * dx + offset_x
                 py = bbox.YMin + r * dy + offset_y
-                # Add heavy jitter to create organic cell sizing
                 px += random.uniform(-0.45, 0.45) * dx
                 py += random.uniform(-0.45, 0.45) * dy
                 seed_points.append([px, py])
@@ -71,13 +134,10 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         for region_index in vor.point_region:
             region = vor.regions[region_index]
             if not region or -1 in region:
-                continue # Skip infinite perimeter regions
+                continue 
 
-            # 1. Get raw Voronoi polygon vertices
             raw_pts = [App.Vector(vor.vertices[i][0], vor.vertices[i][1], z_min_line) for i in region]
             
-            # 2. Inset the polygon to create the "Gap"
-            # We do this by pulling points towards the centroid
             centroid_x = sum(p.x for p in raw_pts) / len(raw_pts)
             centroid_y = sum(p.y for p in raw_pts) / len(raw_pts)
             centroid = App.Vector(centroid_x, centroid_y, z_min_line)
@@ -86,15 +146,13 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             for p in raw_pts:
                 vec = centroid - p
                 dist = vec.Length
-                # Move towards centroid by half the gap, clamping at 90% so cells don't invert
                 move_dist = min(gap / 2.0, dist * 0.9)
                 if dist > 1e-5:
                     vec.normalize()
                 inset_pts.append(p + vec * move_dist)
             
-            inset_pts.append(inset_pts[0]) # Close loop
+            inset_pts.append(inset_pts[0]) 
             
-            # 3. Strict Mode Check
             if strict_mode:
                 valid_tile = True
                 for p in inset_pts:
@@ -104,7 +162,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                 if not valid_tile:
                     continue
             
-            # 4. Build Face
             polygon = Part.makePolygon(inset_pts)
             pattern_faces.append(Part.Face(polygon))
 
@@ -136,7 +193,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             for r in range(-4, rows + 4):
                 x = bbox.XMin + c * dx + offset_x
                 y = bbox.YMin + r * dy + offset_y
-                z = bbox.ZMin - 10
+                z = z_min_line
 
                 if c % 2 != 0:
                     y += odd_y_offset
@@ -174,23 +231,28 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                     circle_edge = Part.makeCircle(tile_radius, App.Vector(x, y, z), App.Vector(0, 0, 1))
                     pattern_faces.append(Part.Face(Part.Wire(circle_edge)))
 
-    # Fail-safe: if strict mode culled EVERY tile
     if not pattern_faces:
         if mode == "cut":
-            return target_obj.Shape.copy()
+            return target_shape.copy()
         else:
             return Part.makeCompound([])
 
     # Fuse and Extrude the grid into 3D pillars
     grid_compound = Part.makeCompound(pattern_faces)
-    z_height = (bbox.ZMax - bbox.ZMin) + 20
+    z_height = (z_max_line - z_min_line)
     pillars = grid_compound.extrude(App.Vector(0, 0, z_height))
 
-    # Perform the selected Boolean Operation
+    # ---------------------------------------------------------
+    # APPLY THE MARGIN BOOLEAN CUT
+    # ---------------------------------------------------------
+    if margin_volume:
+        pillars = pillars.common(margin_volume)
+
+    # Perform the final selected Boolean Operation
     if mode == "cut":
-        return target_obj.Shape.cut(pillars)
+        return target_shape.cut(pillars)
     else:
-        return target_obj.Shape.common(pillars)
+        return target_shape.common(pillars)
 
 
 # ==========================================
@@ -235,6 +297,15 @@ class PatternTaskPanel:
         self.gap_spin.setToolTip("The space between tiles (creates the lattice walls).")
         self.gap_spin.setKeyboardTracking(False)
         form_layout.addRow("Gap Size:", self.gap_spin)
+        
+        # Border Size
+        self.border_spin = QtWidgets.QDoubleSpinBox()
+        self.border_spin.setRange(0.0, 500.0)
+        self.border_spin.setValue(0.0)
+        self.border_spin.setSuffix(" mm")
+        self.border_spin.setToolTip("Leave a solid border/margin along the edges.")
+        self.border_spin.setKeyboardTracking(False)
+        form_layout.addRow("Border Margin:", self.border_spin)
 
         # X Offset
         self.offset_x_spin = QtWidgets.QDoubleSpinBox()
@@ -274,6 +345,7 @@ class PatternTaskPanel:
         self.pattern_combo.currentIndexChanged.connect(self.update_preview)
         self.radius_spin.valueChanged.connect(self.update_preview)
         self.gap_spin.valueChanged.connect(self.update_preview)
+        self.border_spin.valueChanged.connect(self.update_preview)
         self.offset_x_spin.valueChanged.connect(self.update_preview)
         self.offset_y_spin.valueChanged.connect(self.update_preview)
         self.operation_combo.currentIndexChanged.connect(self.update_preview)
@@ -289,6 +361,7 @@ class PatternTaskPanel:
         pattern = self.pattern_combo.currentText()
         radius = self.radius_spin.value()
         gap = self.gap_spin.value()
+        border = self.border_spin.value()
         offset_x = self.offset_x_spin.value()
         offset_y = self.offset_y_spin.value()
         mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
@@ -296,7 +369,7 @@ class PatternTaskPanel:
 
         try:
             new_shape = calculate_pattern_shape(
-                self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, strict_mode
+                self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, strict_mode, border
             )
             self.preview_obj.Shape = new_shape
             App.ActiveDocument.recompute()
