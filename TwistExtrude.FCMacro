@@ -170,10 +170,10 @@ def create_smart_twist_feature(profile_obj, path_obj, total_height, total_angle,
     obj = doc.addObject("Part::FeaturePython", feat_name)
     
     # 2. Add Properties that link to the Sketch
-    obj.addProperty("App::PropertyLink", "Profile", "Twist Parameters", "Base profile sketch")
+    obj.addProperty("App::PropertyLinkGlobal", "Profile", "Twist Parameters", "Base profile sketch")
     obj.Profile = profile_obj
     
-    obj.addProperty("App::PropertyLink", "Path", "Twist Parameters", "Path sketch")
+    obj.addProperty("App::PropertyLinkGlobal", "Path", "Twist Parameters", "Path sketch")
     if path_obj: 
         obj.Path = path_obj
         
