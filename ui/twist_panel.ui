@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TaskPanel</class>
+ <widget class="QWidget" name="TaskPanel">
+  <layout class="QVBoxLayout">
+   <item>
+    <layout class="QFormLayout">
+     <item row="0" column="0"><widget class="QLabel"><property name="text"><string>Total Height (mm):</string></property></widget></item>
+     <item row="0" column="1"><widget class="QDoubleSpinBox" name="height_spin"><property name="maximum"><double>10000.0</double></property><property name="value"><double>100.0</double></property></widget></item>
+     <item row="1" column="0"><widget class="QLabel"><property name="text"><string>Total Twist Angle (°):</string></property></widget></item>
+     <item row="1" column="1"><widget class="QDoubleSpinBox" name="angle_spin"><property name="minimum"><double>-3600.0</double></property><property name="maximum"><double>3600.0</double></property><property name="value"><double>360.0</double></property></widget></item>
+     <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Twist Easing:</string></property></widget></item>
+     <item row="2" column="1">
+      <widget class="QComboBox" name="easing_combo">
+       <item><property name="text"><string>Linear</string></property></item>
+       <item><property name="text"><string>Ease In (Quad)</string></property></item>
+       <item><property name="text"><string>Ease Out (Quad)</string></property></item>
+       <item><property name="text"><string>Ease In-Out (Smoothstep)</string></property></item>
+       <item><property name="text"><string>Ease In-Out (Sine)</string></property></item>
+      </widget>
+     </item>
+     <item row="3" column="0"><widget class="QLabel"><property name="text"><string>Number of Sections:</string></property></widget></item>
+     <item row="3" column="1"><widget class="QSpinBox" name="sections_spin"><property name="minimum"><number>2</number></property><property name="maximum"><number>500</number></property><property name="value"><number>24</number></property></widget></item>
+     <item row="4" column="0"><widget class="QLabel"><property name="text"><string>Scale Formula:</string></property></widget></item>
+     <item row="4" column="1">
+      <widget class="QComboBox" name="equation_input">
+       <property name="editable"><bool>true</bool></property>
+       <item><property name="text"><string>1.0 + cos(t * 2 * pi) * 0.5</string></property></item>
+       <item><property name="text"><string>1.0</string></property></item>
+      </widget>
+     </item>
+     <item row="5" column="1"><widget class="QCheckBox" name="sketches_only_cb"><property name="text"><string>Generate Sketches Only</string></property></widget></item>
+    </layout>
+   </item>
+   <item><spacer><property name="orientation"><enum>Qt::Vertical</enum></property></spacer></item>
+  </layout>
+ </widget>
+</ui>

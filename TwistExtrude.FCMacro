@@ -3,15 +3,15 @@ import FreeCADGui as Gui
 import Part
 import Draft
 import math
-from PySide6 import QtWidgets
-from PySide6.QtCore import Qt
+import os
 import importlib
 
 from SharedLib import MacroShared
+from SharedLib.UI import BaseTaskPanel
 importlib.reload(MacroShared)
 
 # ==========================================
-# HELPER MATH
+# CORE LOGIC
 # ==========================================
 def get_twist_t(t, twist_easing):
     """Calculates the eased value of 't' for the twist angle."""
@@ -25,9 +25,7 @@ def get_twist_t(t, twist_easing):
         return 0.5 * (1.0 - math.cos(math.pi * t))
     return t
 
-# ==========================================
-# PREVIEW LOGIC (Fast In-Memory Generation)
-# ==========================================
+
 def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_angle, num_sections, equation_str, twist_easing, sketches_only):
     """
     Calculates a lightweight Part.Shape for the live preview. 
@@ -122,9 +120,6 @@ def calculate_twist_preview_shape(profile_obj, path_obj, total_height, total_ang
             return Part.makeCompound(section_wires)
 
 
-# ==========================================
-# TRUE GENERATION LOGIC
-# ==========================================
 @MacroShared.with_undo("Twist Extrude")
 def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=360.0, num_sections=12, equation_str="1.0", twist_easing="Linear", sketches_only=False):
     doc = App.ActiveDocument
@@ -232,151 +227,45 @@ def generate_smart_twist(profile_obj, path_obj, total_height=120.0, total_angle=
 
 
 # ==========================================
-# GUI LOGIC (Native Task Panel)
+# TOOL IMPLEMENTATION (Refactored)
 # ==========================================
-class SmartTwistTaskPanel:
+class SmartTwistTaskPanel(BaseTaskPanel):
     def __init__(self, profile_obj, path_obj):
         self.profile_obj = profile_obj
         self.path_obj = path_obj
-
-        self.form = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.form)
-
-        instruction_text = (
-            "<b>1.</b> Set parameters below.<br>"
-            "<b>2.</b> View live preview in the 3D window.<br>"
-            "<b>3.</b> Click OK to apply or Cancel to revert."
-        )
-        layout.addWidget(QtWidgets.QLabel(instruction_text))
-
-        form_layout = QtWidgets.QFormLayout()
-
-        # Height
-        self.height_spin = QtWidgets.QDoubleSpinBox()
-        self.height_spin.setRange(0.1, 10000.0)
-        self.height_spin.setValue(100.0)
-        self.height_spin.setSuffix(" mm")
-        self.height_spin.setToolTip("Ignored if a Path sketch is selected.")
-        self.height_spin.setKeyboardTracking(False)
-        form_layout.addRow("Total Height:", self.height_spin)
-
-        # Twist Angle
-        self.angle_spin = QtWidgets.QDoubleSpinBox()
-        self.angle_spin.setRange(-3600.0, 3600.0)
-        self.angle_spin.setValue(360.0)
-        self.angle_spin.setSuffix(" °")
-        self.angle_spin.setKeyboardTracking(False)
-        form_layout.addRow("Total Twist Angle:", self.angle_spin)
-        
-        # Twist Easing
-        self.easing_combo = QtWidgets.QComboBox()
-        self.easing_combo.addItems([
-            "Linear", 
-            "Ease In (Quad)", 
-            "Ease Out (Quad)", 
-            "Ease In-Out (Smoothstep)",
-            "Ease In-Out (Sine)"
-        ])
-        self.easing_combo.setToolTip("Controls how the twist accelerates and decelerates.")
-        form_layout.addRow("Twist Easing:", self.easing_combo)
-
-        # Sections
-        self.sections_spin = QtWidgets.QSpinBox()
-        self.sections_spin.setRange(2, 500)
-        self.sections_spin.setValue(24)
-        self.sections_spin.setKeyboardTracking(False)
-        form_layout.addRow("Number of Sections:", self.sections_spin)
-
-        # Equation
-        self.equation_input = QtWidgets.QComboBox()
-        self.equation_input.setEditable(True)
-        presets = [
-            ("1.0 + cos(t * 2 * pi) * 0.5", "1 Wave: Fat at start, skinny in middle, fat at end"),
-            ("1.0 + cos(t * 4 * pi) * 0.5", "2 Waves: Creates two skinny pinch points"),
-            ("1.0 + sin(t * pi) * 0.5",     "Middle Bulge: Skinny at start/end, fat in middle"),
-            ("1.0 - sin(t * pi) * 0.5",     "Middle Pinch: Fat at start/end, skinny in middle"),
-            ("1.0 + (t * 0.5)",             "Linear Flare: Gradually gets wider towards the end"),
-            ("1.0",                         "No Scale: Straight extrusion")
-        ]
-        for index, (formula, tooltip) in enumerate(presets):
-            self.equation_input.addItem(formula)
-            self.equation_input.setItemData(index, tooltip, Qt.ToolTipRole)
-
-        self.equation_input.setToolTip("Select a preset, hover for details, or type custom math.")
-        form_layout.addRow("Scale Formula:", self.equation_input)
-
-        # Sketches Only Toggle
-        self.sketches_only_cb = QtWidgets.QCheckBox("Generate Sketches Only (Skip Loft)")
-        self.sketches_only_cb.setChecked(False)
-        self.sketches_only_cb.setToolTip("Generates scaled/rotated sketches without the Additive Loft.")
-        form_layout.addRow("", self.sketches_only_cb)
-
-        layout.addLayout(form_layout)
-        layout.addStretch()
-
-        # Connect Signals for Live Update
-        self.height_spin.valueChanged.connect(self.update_preview)
-        self.angle_spin.valueChanged.connect(self.update_preview)
-        self.easing_combo.currentIndexChanged.connect(self.update_preview)
-        self.sections_spin.valueChanged.connect(self.update_preview)
-        self.equation_input.editTextChanged.connect(self.update_preview)
-        self.equation_input.currentIndexChanged.connect(self.update_preview)
-        self.sketches_only_cb.toggled.connect(self.update_preview)
-
-        # --- PREVIEW SETUP ---
-        App.ActiveDocument.openTransaction("Twist Preview")
-        self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "TwistPreview")
+        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "twist_panel.ui")
+        super().__init__(ui_path, has_preview=True)
         self.profile_obj.Visibility = False
-        self.update_preview()
 
-    def update_preview(self, *args):
-        height = self.height_spin.value()
-        angle = self.angle_spin.value()
-        sections = self.sections_spin.value()
-        equation = self.equation_input.currentText()
-        easing = self.easing_combo.currentText()
-        sketches_only = self.sketches_only_cb.isChecked()
+    def setup_ui(self):
+        self.form.height_spin.valueChanged.connect(self.queue_preview)
+        self.form.angle_spin.valueChanged.connect(self.queue_preview)
+        self.form.easing_combo.currentIndexChanged.connect(self.queue_preview)
+        self.form.sections_spin.valueChanged.connect(self.queue_preview)
+        self.form.equation_input.editTextChanged.connect(self.queue_preview)
+        self.form.equation_input.currentIndexChanged.connect(self.queue_preview)
+        self.form.sketches_only_cb.toggled.connect(self.queue_preview)
 
-        try:
-            new_shape = calculate_twist_preview_shape(
-                self.profile_obj, self.path_obj, 
-                height, angle, sections, equation, easing, sketches_only
-            )
-            self.preview_obj.Shape = new_shape
-            App.ActiveDocument.recompute()
-        except Exception as e:
-            App.Console.PrintWarning(f"Preview calculation error: {e}\n")
+    def calculate_preview(self):
+        return calculate_twist_preview_shape(
+            self.profile_obj, self.path_obj, 
+            self.form.height_spin.value(), self.form.angle_spin.value(), 
+            self.form.sections_spin.value(), self.form.equation_input.currentText(), 
+            self.form.easing_combo.currentText(), self.form.sketches_only_cb.isChecked()
+        )
 
-    def getStandardButtons(self):
-        return (QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel).value
-
-    def accept(self):
-        # 1. Revert the preview transaction (removes preview_obj, restores visibility)
-        App.ActiveDocument.abortTransaction()
-        
-        # 2. Extract final values
-        height = self.height_spin.value()
-        angle = self.angle_spin.value()
-        sections = self.sections_spin.value()
-        equation = self.equation_input.currentText()
-        easing = self.easing_combo.currentText()
-        sketches_only = self.sketches_only_cb.isChecked()
-
-        # 3. Build the actual Parametric FreeCAD tree
+    def generate_final(self):
         generate_smart_twist(
             self.profile_obj, self.path_obj, 
-            height, angle, sections, equation, easing, sketches_only
+            self.form.height_spin.value(), self.form.angle_spin.value(), 
+            self.form.sections_spin.value(), self.form.equation_input.currentText(), 
+            self.form.easing_combo.currentText(), self.form.sketches_only_cb.isChecked()
         )
-        Gui.Control.closeDialog()
 
     def reject(self):
-        App.ActiveDocument.abortTransaction()
-        Gui.Control.closeDialog()
+        self.profile_obj.Visibility = True
+        super().reject()
 
-
-# ==========================================
-# LAUNCHER
-# ==========================================
 if Gui.Control.activeDialog():
     Gui.Control.closeDialog()
 
@@ -386,6 +275,5 @@ if not sel or not hasattr(sel[0], "TypeId") or "Sketcher::SketchObject" not in s
 else:
     prof_obj = sel[0]
     pth_obj = sel[1] if len(sel) >= 2 else None
-
     panel = SmartTwistTaskPanel(prof_obj, pth_obj)
     Gui.Control.showDialog(panel)

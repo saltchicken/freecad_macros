@@ -2,7 +2,10 @@ import FreeCAD as App
 import FreeCADGui as Gui
 import Part
 import math
-from PySide6 import QtWidgets, QtCore
+import os
+from PySide6 import QtWidgets
+
+from SharedLib.UI import BaseTaskPanel
 
 # ==========================================
 # CORE LOGIC: SMART EDGE LOOP
@@ -165,7 +168,6 @@ def select_smart_loop(angle_tolerance=45.0):
     mode_text = f" constrained to {target_face_name}" if target_face_name else ""
     App.Console.PrintMessage(f"SmartLoop: Selected {len(loop_edge_names)} edges at <= {angle_tolerance}° tolerance{mode_text}.\n")
 
-
 # ==========================================
 # CORE LOGIC: BULK EDGE CLASSIFICATION
 # ==========================================
@@ -243,7 +245,6 @@ def select_edges_by_type(category_keys):
             
     App.Console.PrintMessage(f"BulkSelect: Selected {count} '{'+'.join(category_keys)}' edges.\n")
 
-
 # ==========================================
 # CORE LOGIC: DIRECTIONAL MATCHING
 # ==========================================
@@ -319,104 +320,36 @@ def select_by_direction(mode="perpendicular", tolerance_deg=1.0):
 
 
 # ==========================================
-# GUI LOGIC (Combined Native Task Panel)
+# TOOL IMPLEMENTATION (Refactored)
 # ==========================================
-
-class SmartEdgeToolsTaskPanel:
+class SmartEdgeToolsTaskPanel(BaseTaskPanel):
     def __init__(self):
-        self.form = QtWidgets.QWidget()
-        main_layout = QtWidgets.QVBoxLayout(self.form)
+        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "smart_edge_panel.ui")
+        # has_preview=False disables the dummy object and timer
+        super().__init__(ui_path, has_preview=False)
 
-        # --- GROUP 1: SMART LOOP ---
-        group_loop = QtWidgets.QGroupBox("Smart Edge Loop")
-        loop_layout = QtWidgets.QVBoxLayout()
-        
-        instruction_text = (
-            "<b>1.</b> Select a single seed edge.<br>"
-            "<b>2.</b> <i>(Optional)</i> Ctrl+click a Face to constrain routing.<br>"
-            "<b>3.</b> Adjust tolerance and click Select Loop."
-        )
-        loop_layout.addWidget(QtWidgets.QLabel(instruction_text))
+    def setup_ui(self):
+        # We bind the buttons directly to the core functions
+        self.form.btn_select.clicked.connect(lambda: select_smart_loop(self.form.tolerance_spin.value()))
+        self.form.btn_para.clicked.connect(lambda: select_by_direction("parallel", 1.0))
+        self.form.btn_perp.clicked.connect(lambda: select_by_direction("perpendicular", 1.0))
+        self.form.btn_in.clicked.connect(lambda: select_edges_by_type(["concave"]))
+        self.form.btn_out.clicked.connect(lambda: select_edges_by_type(["convex"]))
+        self.form.btn_bound.clicked.connect(lambda: select_edges_by_type(["boundary"]))
 
-        form_layout = QtWidgets.QFormLayout()
-        self.tolerance_spin = QtWidgets.QDoubleSpinBox()
-        self.tolerance_spin.setRange(0.0, 180.0)
-        self.tolerance_spin.setValue(45.0)
-        self.tolerance_spin.setSuffix(" °")
-        form_layout.addRow("Max Angle:", self.tolerance_spin)
-        loop_layout.addLayout(form_layout)
-
-        self.btn_select = QtWidgets.QPushButton("Select Loop")
-        self.btn_select.setStyleSheet("font-weight: bold; padding: 6px;")
-        self.btn_select.clicked.connect(lambda: select_smart_loop(self.tolerance_spin.value()))
-        loop_layout.addWidget(self.btn_select)
-        
-        group_loop.setLayout(loop_layout)
-        main_layout.addWidget(group_loop)
-
-        # --- GROUP 2: DIRECTIONAL MATCHING ---
-        group_dir = QtWidgets.QGroupBox("Directional Matching")
-        dir_layout = QtWidgets.QVBoxLayout()
-        
-        dir_instruction = QtWidgets.QLabel("Select a single reference edge:")
-        dir_layout.addWidget(dir_instruction)
-        
-        # Parallel Button
-        self.btn_para = QtWidgets.QPushButton("Select Parallel Edges")
-        self.btn_para.clicked.connect(lambda: select_by_direction("parallel", 1.0))
-        dir_layout.addWidget(self.btn_para)
-        
-        # Perpendicular Button
-        self.btn_perp = QtWidgets.QPushButton("Select Perpendicular Edges")
-        self.btn_perp.clicked.connect(lambda: select_by_direction("perpendicular", 1.0))
-        dir_layout.addWidget(self.btn_perp)
-        
-        group_dir.setLayout(dir_layout)
-        main_layout.addWidget(group_dir)
-
-        # --- GROUP 3: BULK SELECTION ---
-        group_bulk = QtWidgets.QGroupBox("Bulk Edge Classification")
-        bulk_layout = QtWidgets.QVBoxLayout()
-        
-        bulk_instruction = QtWidgets.QLabel("Select the object in the tree, then click a filter:")
-        bulk_instruction.setWordWrap(True)
-        bulk_layout.addWidget(bulk_instruction)
-        
-        self.btn_in = QtWidgets.QPushButton("Select Interior (Concave / Holes)")
-        self.btn_in.clicked.connect(lambda: select_edges_by_type(["concave"]))
-        bulk_layout.addWidget(self.btn_in)
-        
-        self.btn_out = QtWidgets.QPushButton("Select Exterior (Convex)")
-        self.btn_out.clicked.connect(lambda: select_edges_by_type(["convex"]))
-        bulk_layout.addWidget(self.btn_out)
-        
-        self.btn_bound = QtWidgets.QPushButton("Select Naked (Surface Boundaries)")
-        self.btn_bound.clicked.connect(lambda: select_edges_by_type(["boundary"]))
-        bulk_layout.addWidget(self.btn_bound)
-        
-        group_bulk.setLayout(bulk_layout)
-        main_layout.addWidget(group_bulk)
-
-        # Push elements to the top
-        main_layout.addStretch()
-
-    # --- FreeCAD Task Panel Required Methods ---
     def getStandardButtons(self):
+        # This tool only needs a Close button, not OK/Cancel
         return QtWidgets.QDialogButtonBox.Close.value
 
-    def reject(self):
+    def accept(self):
         Gui.Control.closeDialog()
 
-
-# 1. Check if a task panel is already active to prevent errors
 if Gui.Control.activeDialog():
     Gui.Control.closeDialog()
 
-# 2. Launch natively in the Tasks tab
 panel = SmartEdgeToolsTaskPanel()
 Gui.Control.showDialog(panel)
 
-# 3. If an edge is already selected on launch, try to run the loop logic
 if Gui.Selection.getSelectionEx():
     try:
         select_smart_loop(45.0)

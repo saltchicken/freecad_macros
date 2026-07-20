@@ -3,10 +3,7 @@ import FreeCADGui as Gui
 import Part
 import math
 import random
-from PySide6 import QtWidgets
-import importlib
-
-# DraftGeomUtils is required to sort disconnected edges into wires
+import os
 import DraftGeomUtils
 
 # Attempt to load SciPy for Voronoi math
@@ -17,6 +14,8 @@ except ImportError:
     HAS_SCIPY = False
 
 from SharedLib import MacroShared
+from SharedLib.UI import BaseTaskPanel
+import importlib
 importlib.reload(MacroShared)
 
 # ==========================================
@@ -456,160 +455,56 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
 
 
 # ==========================================
-# GUI LOGIC (Native Task Panel)
+# TOOL IMPLEMENTATION (Refactored)
 # ==========================================
-
-class PatternTaskPanel:
+class PatternTaskPanel(BaseTaskPanel):
     def __init__(self, target_obj):
         self.target_obj = target_obj
-        self.form = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.form)
-
-        instruction_text = (
-            "<b>1.</b> Select pattern type, mapping, sizes, and offsets.<br>"
-            "<b>2.</b> View live preview in the 3D window.<br>"
-            "<b>3.</b> Click OK to apply or Cancel to revert."
-        )
-        layout.addWidget(QtWidgets.QLabel(instruction_text))
-
-        form_layout = QtWidgets.QFormLayout()
-
-        self.pattern_combo = QtWidgets.QComboBox()
-        self.pattern_combo.addItems(["Hexagon", "Square", "Circle (Staggered)", "Circle (Grid)", "Voronoi (Organic)"])
-        self.pattern_combo.setToolTip("Select the geometric shape of the lattice.")
-        form_layout.addRow("Pattern Shape:", self.pattern_combo)
-        
-        self.mapping_combo = QtWidgets.QComboBox()
-        self.mapping_combo.addItems(["Planar", "Cylindrical", "Spherical"])
-        self.mapping_combo.setToolTip("How the pattern projects onto the shape. Cylindrical and Spherical wrap the pattern around the center.")
-        form_layout.addRow("Surface Mapping:", self.mapping_combo)
-
-        self.radius_spin = QtWidgets.QDoubleSpinBox()
-        self.radius_spin.setRange(0.1, 1000.0)
-        self.radius_spin.setValue(8.0)
-        self.radius_spin.setSuffix(" mm")
-        self.radius_spin.setToolTip("The radius (or half-width) of a single tile.")
-        self.radius_spin.setKeyboardTracking(False)
-        form_layout.addRow("Tile Radius:", self.radius_spin)
-
-        self.gap_spin = QtWidgets.QDoubleSpinBox()
-        self.gap_spin.setRange(0.0, 500.0)
-        self.gap_spin.setValue(1.0)
-        self.gap_spin.setSuffix(" mm")
-        self.gap_spin.setToolTip("The space between tiles (creates the lattice walls).")
-        self.gap_spin.setKeyboardTracking(False)
-        form_layout.addRow("Gap Size:", self.gap_spin)
-        
-        self.depth_spin = QtWidgets.QDoubleSpinBox()
-        self.depth_spin.setRange(0.1, 1000.0)
-        self.depth_spin.setValue(5.0)
-        self.depth_spin.setSuffix(" mm")
-        self.depth_spin.setToolTip("How deep the pattern cuts into the object. Prevents FreeCAD from freezing by stopping pillars from overlapping in the exact center.")
-        self.depth_spin.setKeyboardTracking(False)
-        form_layout.addRow("Extrusion Depth:", self.depth_spin)
-
-        self.fillet_spin = QtWidgets.QDoubleSpinBox()
-        self.fillet_spin.setRange(0.0, 500.0)
-        self.fillet_spin.setValue(0.0)
-        self.fillet_spin.setSuffix(" mm")
-        self.fillet_spin.setToolTip("Radius to round the interior corners. (Set to 0 to disable). If radius is too large for the tile, corners stay sharp.")
-        self.fillet_spin.setKeyboardTracking(False)
-        form_layout.addRow("Corner Fillet:", self.fillet_spin)
-        
-        self.border_spin = QtWidgets.QDoubleSpinBox()
-        self.border_spin.setRange(0.0, 500.0)
-        self.border_spin.setValue(0.0)
-        self.border_spin.setSuffix(" mm")
-        self.border_spin.setToolTip("Planar: Margin along edges.\nCylindrical/Spherical: Leaves a solid un-cut band at the top and bottom.")
-        self.border_spin.setKeyboardTracking(False)
-        form_layout.addRow("Border Margin:", self.border_spin)
-
-        self.threshold_spin = QtWidgets.QDoubleSpinBox()
-        self.threshold_spin.setRange(0.0, 100.0)
-        self.threshold_spin.setValue(0.0)
-        self.threshold_spin.setSuffix(" %")
-        self.threshold_spin.setToolTip("Only generate tiles if this % of their area fits inside the boundary.\n0% = Keep all touching.\n100% = Strict full tiles only.")
-        self.threshold_spin.setKeyboardTracking(False)
-        form_layout.addRow("Min Tile Visibility:", self.threshold_spin)
-
-        self.offset_x_spin = QtWidgets.QDoubleSpinBox()
-        self.offset_x_spin.setRange(-1000.0, 1000.0)
-        self.offset_x_spin.setValue(0.0)
-        self.offset_x_spin.setSuffix(" mm")
-        self.offset_x_spin.setToolTip("Shift the pattern. Note: For Voronoi, changing offsets generates a new random seed.")
-        self.offset_x_spin.setKeyboardTracking(False)
-        form_layout.addRow("X Offset:", self.offset_x_spin)
-
-        self.offset_y_spin = QtWidgets.QDoubleSpinBox()
-        self.offset_y_spin.setRange(-1000.0, 1000.0)
-        self.offset_y_spin.setValue(0.0)
-        self.offset_y_spin.setSuffix(" mm")
-        self.offset_y_spin.setToolTip("Shift the pattern. Note: For Voronoi, changing offsets generates a new random seed.")
-        self.offset_y_spin.setKeyboardTracking(False)
-        form_layout.addRow("Y Offset:", self.offset_y_spin)
-
-        self.operation_combo = QtWidgets.QComboBox()
-        self.operation_combo.addItem("Cut (Create Lattice)")
-        self.operation_combo.addItem("Common (Create Panels)")
-        self.operation_combo.setToolTip("Cut removes the pillars. Common keeps the pillars.")
-        form_layout.addRow("Operation:", self.operation_combo)
-
-        layout.addLayout(form_layout)
-        layout.addStretch()
-
-        self.pattern_combo.currentIndexChanged.connect(self.update_preview)
-        self.mapping_combo.currentIndexChanged.connect(self.update_preview)
-        self.radius_spin.valueChanged.connect(self.update_preview)
-        self.gap_spin.valueChanged.connect(self.update_preview)
-        self.depth_spin.valueChanged.connect(self.update_preview)
-        self.fillet_spin.valueChanged.connect(self.update_preview)
-        self.border_spin.valueChanged.connect(self.update_preview)
-        self.threshold_spin.valueChanged.connect(self.update_preview)
-        self.offset_x_spin.valueChanged.connect(self.update_preview)
-        self.offset_y_spin.valueChanged.connect(self.update_preview)
-        self.operation_combo.currentIndexChanged.connect(self.update_preview)
-
-        App.ActiveDocument.openTransaction("Pattern Preview")
-        self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "PatternPreview")
+        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "lattice_panel.ui")
+        super().__init__(ui_path, has_preview=True)
         self.target_obj.Visibility = False
-        self.update_preview()
 
-    def update_preview(self, *args):
-        pattern = self.pattern_combo.currentText()
-        mapping = self.mapping_combo.currentText()
-        radius = self.radius_spin.value()
-        gap = self.gap_spin.value()
-        depth = self.depth_spin.value()
-        fillet = self.fillet_spin.value()
-        border = self.border_spin.value()
-        threshold = self.threshold_spin.value()
-        offset_x = self.offset_x_spin.value()
-        offset_y = self.offset_y_spin.value()
-        mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
+    def setup_ui(self):
+        # Connect all inputs to the debouncer
+        self.form.pattern_combo.currentIndexChanged.connect(self.queue_preview)
+        self.form.mapping_combo.currentIndexChanged.connect(self.queue_preview)
+        self.form.radius_spin.valueChanged.connect(self.queue_preview)
+        self.form.gap_spin.valueChanged.connect(self.queue_preview)
+        self.form.depth_spin.valueChanged.connect(self.queue_preview)
+        self.form.fillet_spin.valueChanged.connect(self.queue_preview)
+        self.form.border_spin.valueChanged.connect(self.queue_preview)
+        self.form.threshold_spin.valueChanged.connect(self.queue_preview)
+        self.form.offset_x_spin.valueChanged.connect(self.queue_preview)
+        self.form.offset_y_spin.valueChanged.connect(self.queue_preview)
+        self.form.operation_combo.currentIndexChanged.connect(self.queue_preview)
 
-        try:
-            new_shape = calculate_pattern_shape(
-                self.target_obj, pattern, radius, gap, mode, offset_x, offset_y, threshold, border, fillet, mapping, depth
-            )
-            self.preview_obj.Shape = new_shape
-            App.ActiveDocument.recompute()
-        except Exception as e:
-            App.Console.PrintError(f"Preview calculation error: {e}\n")
+    def calculate_preview(self):
+        mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
+        return calculate_pattern_shape(
+            self.target_obj, 
+            self.form.pattern_combo.currentText(), 
+            self.form.radius_spin.value(), 
+            self.form.gap_spin.value(), 
+            mode, 
+            self.form.offset_x_spin.value(), 
+            self.form.offset_y_spin.value(), 
+            self.form.threshold_spin.value(), 
+            self.form.border_spin.value(), 
+            self.form.fillet_spin.value(), 
+            self.form.mapping_combo.currentText(), 
+            self.form.depth_spin.value()
+        )
 
-    def getStandardButtons(self):
-        return (QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel).value
-
-    def accept(self):
-        mode = "cut" if self.operation_combo.currentIndex() == 0 else "common"
-        op_text = "Lattice" if mode == "cut" else "Panels"
-        self.preview_obj.Label = f"{self.target_obj.Name}_{op_text}"
-        App.ActiveDocument.commitTransaction()
-        Gui.Control.closeDialog()
+    def generate_final(self):
+        shape = self.calculate_preview()
+        mode_text = "Lattice" if self.form.operation_combo.currentIndex() == 0 else "Panels"
+        final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
+        final_obj.Shape = shape
+        self.target_obj.Visibility = False
 
     def reject(self):
-        App.ActiveDocument.abortTransaction()
-        Gui.Control.closeDialog()
-
+        self.target_obj.Visibility = True
+        super().reject()
 
 if Gui.Control.activeDialog():
     Gui.Control.closeDialog()

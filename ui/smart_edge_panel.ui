@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TaskPanel</class>
+ <widget class="QWidget" name="TaskPanel">
+  <layout class="QVBoxLayout">
+   <item>
+    <widget class="QGroupBox" name="groupBox">
+     <property name="title"><string>Smart Edge Loop</string></property>
+     <layout class="QVBoxLayout">
+      <item>
+       <layout class="QFormLayout">
+        <item row="0" column="0"><widget class="QLabel"><property name="text"><string>Max Angle (°):</string></property></widget></item>
+        <item row="0" column="1"><widget class="QDoubleSpinBox" name="tolerance_spin"><property name="value"><double>45.0</double></property></widget></item>
+       </layout>
+      </item>
+      <item><widget class="QPushButton" name="btn_select"><property name="text"><string>Select Loop</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBox_2">
+     <property name="title"><string>Directional Matching</string></property>
+     <layout class="QVBoxLayout">
+      <item><widget class="QPushButton" name="btn_para"><property name="text"><string>Select Parallel</string></property></widget></item>
+      <item><widget class="QPushButton" name="btn_perp"><property name="text"><string>Select Perpendicular</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBox_3">
+     <property name="title"><string>Bulk Edge Classification</string></property>
+     <layout class="QVBoxLayout">
+      <item><widget class="QPushButton" name="btn_in"><property name="text"><string>Select Interior (Concave)</string></property></widget></item>
+      <item><widget class="QPushButton" name="btn_out"><property name="text"><string>Select Exterior (Convex)</string></property></widget></item>
+      <item><widget class="QPushButton" name="btn_bound"><property name="text"><string>Select Naked (Boundaries)</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item><spacer><property name="orientation"><enum>Qt::Vertical</enum></property></spacer></item>
+  </layout>
+ </widget>
+</ui>
