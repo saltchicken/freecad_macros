@@ -1,12 +1,15 @@
 import FreeCAD as App
 import FreeCADGui as Gui
-from PySide6 import QtWidgets, QtCore
+from PySide6 import QtCore
+from PySide6 import QtWidgets
+
 
 class BaseTaskPanel:
     """
     A reusable base class for FreeCAD Task Panels.
     Handles UI loading, debounced previews, and safe undo transactions.
     """
+
     def __init__(self, ui_file_path, has_preview=True):
         self.form = Gui.PySideUic.loadUi(ui_file_path)
         self.has_preview = has_preview
@@ -15,12 +18,13 @@ class BaseTaskPanel:
             # Setup Debouncer (QTimer) to prevent FreeCAD freezing during slider drags
             self.preview_timer = QtCore.QTimer()
             self.preview_timer.setSingleShot(True)
-            self.preview_timer.setInterval(150) # 150ms delay
+            self.preview_timer.setInterval(150)  # 150ms delay
             self.preview_timer.timeout.connect(self._trigger_preview)
 
             # Start a preview transaction so we can safely undo
             App.ActiveDocument.openTransaction("Preview Transaction")
-            self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "PreviewObject")
+            self.preview_obj = App.ActiveDocument.addObject(
+                "Part::Feature", "PreviewObject")
 
         self.setup_ui()
 
@@ -57,7 +61,8 @@ class BaseTaskPanel:
     # --- FreeCAD Task Panel Hooks ---
 
     def getStandardButtons(self):
-        return (QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel).value
+        return (QtWidgets.QDialogButtonBox.Ok |
+                QtWidgets.QDialogButtonBox.Cancel).value
 
     def accept(self):
         if self.has_preview:
