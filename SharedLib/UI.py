@@ -1,7 +1,9 @@
 import FreeCAD as App
 import FreeCADGui as Gui
-from PySide6 import QtCore
-from PySide6 import QtWidgets
+try:
+    from PySide6 import QtCore, QtWidgets
+except ImportError:
+    from PySide2 import QtCore, QtWidgets
 
 
 class BaseTaskPanel:
