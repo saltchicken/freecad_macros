@@ -468,22 +468,24 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     # ---------------------------------------------------------
     # FINAL BOOLEAN & WARNING LOGIC
     # ---------------------------------------------------------
+    
+    # NEW: For preview mode, we ALWAYS return the raw pillars (tools) 
+    # so they can be rendered as transparent red overlays, skipping heavy booleans.
+    if preview_mode:
+        return pillars
+        
     if len(pattern_faces) > 200:
-        if preview_mode:
-            App.Console.PrintWarning(f"High pattern density ({len(pattern_faces)} tiles). Skipping exact boolean against target shape during preview to prevent freezing.\n")
-            return pillars
-        else:
-            reply = QtWidgets.QMessageBox.question(
-                Gui.getMainWindow(),
-                "Heavy Boolean Warning",
-                f"You are about to process {len(pattern_faces)} lattice pillars.\nThis boolean operation may take several minutes and temporarily freeze FreeCAD.\n\nDo you want to continue?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No
-            )
-            if reply == QtWidgets.QMessageBox.No:
-                return None
+        reply = QtWidgets.QMessageBox.question(
+            Gui.getMainWindow(),
+            "Heavy Boolean Warning",
+            f"You are about to process {len(pattern_faces)} lattice pillars.\nThis boolean operation may take several minutes and temporarily freeze FreeCAD.\n\nDo you want to continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.No:
+            return None
 
-    # NEW: If we just need the tool solids for a PartDesign Boolean, return them raw.
+    # If we just need the tool solids for a PartDesign Boolean, return them raw.
     if return_tools_only:
         return pillars
 
@@ -501,7 +503,8 @@ class PatternTaskPanel(BaseTaskPanel):
         self.target_obj = target_obj
         ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "lattice_panel.ui")
         super().__init__(ui_path, has_preview=True)
-        self.target_obj.Visibility = False
+        # Keep the target object visible during preview so we can see the red cutting tools overlay it
+        self.target_obj.Visibility = True
 
     def setup_ui(self):
         # Connect all inputs to the debouncer
@@ -521,7 +524,7 @@ class PatternTaskPanel(BaseTaskPanel):
 
     def calculate_preview(self):
         mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
-        return calculate_pattern_shape(
+        shape = calculate_pattern_shape(
             self.target_obj,
             self.form.pattern_combo.currentText(),
             self.form.radius_spin.value(),
@@ -534,8 +537,36 @@ class PatternTaskPanel(BaseTaskPanel):
             self.form.fillet_spin.value(),
             self.form.mapping_combo.currentText(),
             self.form.depth_spin.value(),
-            preview_mode=True # Defers heavy booleans
+            preview_mode=True # Defers heavy booleans, always returns tool pillars
         )
+        
+        # Schedule the styling of the preview object asynchronously 
+        # so the base class has time to apply the updated shape first.
+        QtCore.QTimer.singleShot(50, self.style_preview_object)
+        
+        return shape
+
+    def style_preview_object(self):
+        """Finds the temporary preview object created by BaseTaskPanel and makes it red and transparent."""
+        # Check standard common property names BaseTaskPanel might use
+        preview_attrs = ['preview_obj', 'preview', 'preview_feature', '_preview_obj', '_preview']
+        for attr in preview_attrs:
+            obj = getattr(self, attr, None)
+            if obj and hasattr(obj, 'ViewObject') and obj.ViewObject:
+                self._apply_preview_style(obj)
+                return
+                
+        # Fallback: scan the document for the temporary preview object
+        if App.ActiveDocument:
+            for obj in App.ActiveDocument.Objects:
+                if "Preview" in obj.Name and obj.Visibility:
+                    self._apply_preview_style(obj)
+                    
+    def _apply_preview_style(self, obj):
+        """Applies the PartDesign-style red transparency to the target object."""
+        if hasattr(obj, 'ViewObject') and obj.ViewObject:
+            obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0) # Red
+            obj.ViewObject.Transparency = 60            # 60% transparent
 
     def generate_final(self):
         mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
@@ -593,6 +624,8 @@ class PatternTaskPanel(BaseTaskPanel):
             mode_text = "Lattice" if mode == "cut" else "Panels"
             final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
             final_obj.Shape = shape
+            
+            # Hide the original object now that we've generated the final result
             self.target_obj.Visibility = False
 
             group_name = "Generated_Lattices"
