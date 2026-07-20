@@ -28,7 +28,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 
-def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0, fillet_radius=0.0, mapping="Planar", extrude_depth=5.0, preview_mode=False, return_tools_only=False):
+def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0, fillet_radius=0.0, mapping="Planar", extrude_depth=5.0, is_preview=False, return_tools_only=False):
     """
     Calculates and returns the resulting Shape of a patterned lattice applied to target_obj.
     Supports Planar, Cylindrical, and Spherical mapping modes.
@@ -88,7 +88,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
 
         try:
             if abs(border) > 0.0:
-                # FreeCAD uses negative values for inward offsets, positive for outward
                 offset_shape = base_face.makeOffset2D(-border)
                 if isinstance(offset_shape, list) and offset_shape:
                     offset_shape = offset_shape[0]
@@ -123,9 +122,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         if border_size > 0.0:
             boundary_face = get_boundary_face(target_shape, border_size)
         else:
-            # Fuzzy Boolean Optimization: 
-            # If no margin is requested and we are cutting, push the cutting volume slightly 
-            # outward (-0.1) past the target shape's bounds to prevent coplanar artifacts.
             if mode == "cut":
                 boundary_face = get_boundary_face(target_shape, -0.1)
                 if not boundary_face:
@@ -140,7 +136,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                 App.Console.PrintWarning("Border margin calculation failed. Returning original shape.\n")
                 return target_shape.copy() if mode == "cut" else Part.makeCompound([])
     else:
-        # Cylindrical / Spherical: Generate the Safe Box early for the final boolean slice
         if border_size > 0.0:
             z_min = bbox.ZMin + border_size
             z_max = bbox.ZMax - border_size
@@ -151,7 +146,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             else:
                 App.Console.PrintWarning("Border margin is too large for the object's height. Ignoring.\n")
 
-        # Original bounds box for accurate tile visibility calculations
         original_bounds_box = Part.makeBox(safe_size, safe_size, bbox.ZMax - bbox.ZMin)
         original_bounds_box.translate(App.Vector(Cx - safe_size/2.0, Cy - safe_size/2.0, bbox.ZMin))
 
@@ -160,8 +154,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         return line.distToShape(target_shape)[0] <= 1e-4
 
     def is_tile_valid(tile_face, test_pts):
-        # FAST BOUNDING BOX CULLING
-        # Reject tiles entirely outside the bounding volume before doing heavy face math
         t_bb = tile_face.BoundBox
         o_bb = target_shape.BoundBox
         
@@ -469,23 +461,22 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     # FINAL BOOLEAN & WARNING LOGIC
     # ---------------------------------------------------------
     
-    # NEW: For preview mode, we ALWAYS return the raw pillars (tools) 
-    # so they can be rendered as transparent red overlays, skipping heavy booleans.
-    if preview_mode:
-        return pillars
-        
     if len(pattern_faces) > 200:
-        reply = QtWidgets.QMessageBox.question(
-            Gui.getMainWindow(),
-            "Heavy Boolean Warning",
-            f"You are about to process {len(pattern_faces)} lattice pillars.\nThis boolean operation may take several minutes and temporarily freeze FreeCAD.\n\nDo you want to continue?",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No
-        )
-        if reply == QtWidgets.QMessageBox.No:
-            return None
+        if is_preview and not return_tools_only:
+            # User specifically asked for the final boolean preview on a heavy mesh
+            App.Console.PrintWarning(f"High pattern density ({len(pattern_faces)} tiles). Final result preview may be slow.\n")
+        elif not is_preview:
+            # Final generation warning
+            reply = QtWidgets.QMessageBox.question(
+                Gui.getMainWindow(),
+                "Heavy Boolean Warning",
+                f"You are about to process {len(pattern_faces)} lattice pillars.\nThis boolean operation may take several minutes and temporarily freeze FreeCAD.\n\nDo you want to continue?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No
+            )
+            if reply == QtWidgets.QMessageBox.No:
+                return None
 
-    # If we just need the tool solids for a PartDesign Boolean, return them raw.
     if return_tools_only:
         return pillars
 
@@ -503,11 +494,34 @@ class PatternTaskPanel(BaseTaskPanel):
         self.target_obj = target_obj
         ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "lattice_panel.ui")
         super().__init__(ui_path, has_preview=True)
-        # Keep the target object visible during preview so we can see the red cutting tools overlay it
+        
+        # Save original target view properties to apply to the final preview later
+        if hasattr(self.target_obj, "ViewObject") and self.target_obj.ViewObject:
+            self.original_color = self.target_obj.ViewObject.ShapeColor
+            self.original_transparency = self.target_obj.ViewObject.Transparency
+        else:
+            self.original_color = (0.8, 0.8, 0.8)
+            self.original_transparency = 0
+            
         self.target_obj.Visibility = True
 
     def setup_ui(self):
-        # Connect all inputs to the debouncer
+        # 1. Dynamically inject the "Show Final Result" toggle if it isn't in your UI file
+        if not hasattr(self.form, "preview_final_cb"):
+            self.preview_final_cb = QtWidgets.QCheckBox("Preview Final Result (Slower)")
+            self.preview_final_cb.setToolTip("Show the final boolean cut instead of the red cutting tool.")
+            self.preview_final_cb.setChecked(False)
+            
+            # Attempt to slot it neatly into the main layout
+            if self.form.layout():
+                self.form.layout().addWidget(self.preview_final_cb)
+            else:
+                self.preview_final_cb.setParent(self.form)
+                self.preview_final_cb.show()
+        else:
+            self.preview_final_cb = self.form.preview_final_cb
+
+        # Connect standard UI signals
         self.form.pattern_combo.currentIndexChanged.connect(self.queue_preview)
         self.form.mapping_combo.currentIndexChanged.connect(self.queue_preview)
         self.form.radius_spin.valueChanged.connect(self.queue_preview)
@@ -519,10 +533,47 @@ class PatternTaskPanel(BaseTaskPanel):
         self.form.offset_x_spin.valueChanged.connect(self.queue_preview)
         self.form.offset_y_spin.valueChanged.connect(self.queue_preview)
         self.form.operation_combo.currentIndexChanged.connect(self.queue_preview)
+        self.preview_final_cb.toggled.connect(self.queue_preview)
+
+        # 2. Hook into the Live Preview to strictly manage visibility when toggled off
         if hasattr(self.form, "live_preview_cb"):
-            self.form.live_preview_cb.toggled.connect(self.queue_preview)
+            self.form.live_preview_cb.toggled.connect(self.on_live_preview_toggled)
+
+    def on_live_preview_toggled(self, checked):
+        """Forces the preview to hide immediately when unchecked."""
+        if not checked:
+            self.target_obj.Visibility = True
+            preview_obj = self.get_preview_object()
+            if preview_obj:
+                preview_obj.Visibility = False
+        else:
+            self.queue_preview()
+
+    def get_preview_object(self):
+        """Helper to locate the temporary preview object created by BaseTaskPanel."""
+        preview_attrs = ['preview_obj', 'preview', 'preview_feature', '_preview_obj', '_preview']
+        for attr in preview_attrs:
+            obj = getattr(self, attr, None)
+            if obj and hasattr(obj, 'ViewObject') and obj.ViewObject:
+                return obj
+        
+        # Fallback document scan
+        if App.ActiveDocument:
+            for obj in App.ActiveDocument.Objects:
+                if "Preview" in obj.Name and obj.Visibility:
+                    return obj
+        return None
 
     def calculate_preview(self):
+        # Abort if live preview is explicitly unchecked
+        if hasattr(self.form, "live_preview_cb") and not self.form.live_preview_cb.isChecked():
+            return None
+
+        show_final = self.preview_final_cb.isChecked()
+        
+        # If showing the final cut, hide the original object. If showing tools, keep it visible.
+        self.target_obj.Visibility = not show_final
+
         mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
         shape = calculate_pattern_shape(
             self.target_obj,
@@ -537,36 +588,33 @@ class PatternTaskPanel(BaseTaskPanel):
             self.form.fillet_spin.value(),
             self.form.mapping_combo.currentText(),
             self.form.depth_spin.value(),
-            preview_mode=True # Defers heavy booleans, always returns tool pillars
+            is_preview=True,
+            return_tools_only=not show_final # If we want to see the final product, DO NOT return just the tools.
         )
         
-        # Schedule the styling of the preview object asynchronously 
-        # so the base class has time to apply the updated shape first.
+        # Defer styling slightly so BaseTaskPanel applies the shape first
         QtCore.QTimer.singleShot(50, self.style_preview_object)
         
         return shape
 
     def style_preview_object(self):
-        """Finds the temporary preview object created by BaseTaskPanel and makes it red and transparent."""
-        # Check standard common property names BaseTaskPanel might use
-        preview_attrs = ['preview_obj', 'preview', 'preview_feature', '_preview_obj', '_preview']
-        for attr in preview_attrs:
-            obj = getattr(self, attr, None)
-            if obj and hasattr(obj, 'ViewObject') and obj.ViewObject:
-                self._apply_preview_style(obj)
-                return
-                
-        # Fallback: scan the document for the temporary preview object
-        if App.ActiveDocument:
-            for obj in App.ActiveDocument.Objects:
-                if "Preview" in obj.Name and obj.Visibility:
-                    self._apply_preview_style(obj)
-                    
-    def _apply_preview_style(self, obj):
-        """Applies the PartDesign-style red transparency to the target object."""
-        if hasattr(obj, 'ViewObject') and obj.ViewObject:
-            obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0) # Red
-            obj.ViewObject.Transparency = 60            # 60% transparent
+        """Applies dynamic styling to the preview object based on toggle state."""
+        preview_obj = self.get_preview_object()
+        if not preview_obj or not hasattr(preview_obj, 'ViewObject') or not preview_obj.ViewObject:
+            return
+
+        preview_obj.Visibility = True
+
+        show_final = self.preview_final_cb.isChecked()
+
+        if show_final:
+            # Make the boolean preview look like the original solid part
+            preview_obj.ViewObject.ShapeColor = self.original_color
+            preview_obj.ViewObject.Transparency = self.original_transparency
+        else:
+            # Make the tool pillars red and transparent
+            preview_obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0) 
+            preview_obj.ViewObject.Transparency = 60            
 
     def generate_final(self):
         mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
@@ -574,38 +622,32 @@ class PatternTaskPanel(BaseTaskPanel):
 
         if active_body:
             # NATIVE PARTDESIGN WORKFLOW
-            # Get only the raw lattice pillars (the cutting tool)
             tool_shape = calculate_pattern_shape(
                 self.target_obj, self.form.pattern_combo.currentText(),
                 self.form.radius_spin.value(), self.form.gap_spin.value(), mode,
                 self.form.offset_x_spin.value(), self.form.offset_y_spin.value(),
                 self.form.threshold_spin.value(), self.form.border_spin.value(),
                 self.form.fillet_spin.value(), self.form.mapping_combo.currentText(),
-                self.form.depth_spin.value(), preview_mode=False,
-                return_tools_only=True # Get just the pillars
+                self.form.depth_spin.value(), is_preview=False,
+                return_tools_only=True
             )
             
             if tool_shape is None:
                 return
 
-            # Store the pillars in a hidden tool object outside the body
             tool_name = f"{self.target_obj.Name}_LatticeTools"
             tool_obj = App.ActiveDocument.addObject("Part::Feature", tool_name)
             tool_obj.Shape = tool_shape
             tool_obj.Visibility = False
 
-            # Create a native PartDesign Boolean inside the active body
             bool_feat = active_body.newObject("PartDesign::Boolean", f"{self.target_obj.Name}_Lattice")
-            
-            # Type: 1 = Subtract (Cut), 2 = Intersect (Common)
             bool_feat.Type = 1 if mode == "cut" else 2
             bool_feat.Group = [tool_obj]
             
-            # FreeCAD automatically updates Body visibility and tip, so just recompute
             App.ActiveDocument.recompute()
             
         else:
-            # FALLBACK: STANDARD PART WORKFLOW (No active body found)
+            # FALLBACK: STANDARD PART WORKFLOW 
             App.Console.PrintWarning("No active PartDesign Body found. Generating as a standard Part feature.\n")
             
             shape = calculate_pattern_shape(
@@ -614,7 +656,7 @@ class PatternTaskPanel(BaseTaskPanel):
                 self.form.offset_x_spin.value(), self.form.offset_y_spin.value(),
                 self.form.threshold_spin.value(), self.form.border_spin.value(),
                 self.form.fillet_spin.value(), self.form.mapping_combo.currentText(),
-                self.form.depth_spin.value(), preview_mode=False,
+                self.form.depth_spin.value(), is_preview=False,
                 return_tools_only=False
             )
             
@@ -625,7 +667,6 @@ class PatternTaskPanel(BaseTaskPanel):
             final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
             final_obj.Shape = shape
             
-            # Hide the original object now that we've generated the final result
             self.target_obj.Visibility = False
 
             group_name = "Generated_Lattices"
