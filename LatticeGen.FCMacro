@@ -6,6 +6,12 @@ import random
 import os
 import DraftGeomUtils
 
+# Support for both FreeCAD 0.21 (Qt5) and FreeCAD 1.0+ (Qt6)
+try:
+    from PySide6 import QtCore, QtWidgets
+except ImportError:
+    from PySide2 import QtCore, QtWidgets
+
 # Attempt to load SciPy for Voronoi math
 try:
     from scipy.spatial import Voronoi
@@ -22,7 +28,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 
-def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0, fillet_radius=0.0, mapping="Planar", extrude_depth=5.0):
+def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0, fillet_radius=0.0, mapping="Planar", extrude_depth=5.0, preview_mode=False):
     """
     Calculates and returns the resulting Shape of a patterned lattice applied to target_obj.
     Supports Planar, Cylindrical, and Spherical mapping modes.
@@ -54,7 +60,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         v_min, v_max = bbox.YMin, bbox.YMax
 
     # ---------------------------------------------------------
-    # BOUNDARY FACE CALCULATION (For Area % Checks)
+    # BOUNDARY FACE CALCULATION (For Area % Checks & Margin)
     # ---------------------------------------------------------
     def get_boundary_face(shape, border):
         if shape.ShapeType in ["Face", "Wire"]:
@@ -81,7 +87,8 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                 return None
 
         try:
-            if border > 0.0:
+            if abs(border) > 0.0:
+                # FreeCAD uses negative values for inward offsets, positive for outward
                 offset_shape = base_face.makeOffset2D(-border)
                 if isinstance(offset_shape, list) and offset_shape:
                     offset_shape = offset_shape[0]
@@ -112,7 +119,19 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
 
     if mapping == "Planar":
         original_boundary_face = get_boundary_face(target_shape, 0.0)
-        boundary_face = get_boundary_face(target_shape, border_size) if border_size > 0.0 else original_boundary_face
+        
+        if border_size > 0.0:
+            boundary_face = get_boundary_face(target_shape, border_size)
+        else:
+            # Fuzzy Boolean Optimization: 
+            # If no margin is requested and we are cutting, push the cutting volume slightly 
+            # outward (-0.1) past the target shape's bounds to prevent coplanar artifacts.
+            if mode == "cut":
+                boundary_face = get_boundary_face(target_shape, -0.1)
+                if not boundary_face:
+                    boundary_face = original_boundary_face
+            else:
+                boundary_face = original_boundary_face
 
         if boundary_face:
             margin_volume = boundary_face.extrude(App.Vector(0, 0, bbox.ZMax + 20 - (bbox.ZMin - 10)))
@@ -141,6 +160,15 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         return line.distToShape(target_shape)[0] <= 1e-4
 
     def is_tile_valid(tile_face, test_pts):
+        # FAST BOUNDING BOX CULLING
+        # Reject tiles entirely outside the bounding volume before doing heavy face math
+        t_bb = tile_face.BoundBox
+        o_bb = target_shape.BoundBox
+        
+        if (t_bb.XMax < o_bb.XMin - 0.1 or t_bb.XMin > o_bb.XMax + 0.1 or
+            t_bb.YMax < o_bb.YMin - 0.1 or t_bb.YMin > o_bb.YMax + 0.1):
+            return False
+
         if inclusion_threshold <= 0.0:
             return True
 
@@ -165,18 +193,15 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             return (inside_count / len(pts_to_check)) >= (inclusion_threshold / 100.0)
 
         else:
-            # Cylindrical and Spherical Culling Logic evaluates against ORIGINAL bounds
             z_min_orig = bbox.ZMin
             z_max_orig = bbox.ZMax
 
-            # Strict 100% full-tile mode
             if inclusion_threshold >= 99.9:
                 for pt in test_pts:
                     if pt.z < z_min_orig - 1e-4 or pt.z > z_max_orig + 1e-4:
                         return False
                 return True
 
-            # Area-based intersection check
             if original_bounds_box:
                 try:
                     intersect = tile_face.common(original_bounds_box)
@@ -186,7 +211,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                 except Exception:
                     pass
 
-            # Fallback if boolean intersection fails (count vertices instead)
             pts_to_check = test_pts[:-1] if (len(test_pts) > 1 and test_pts[0].isEqual(test_pts[-1], 1e-5)) else test_pts
             if not pts_to_check: return False
             inside_count = sum(1 for p in pts_to_check if (z_min_orig - 1e-4 <= p.z <= z_max_orig + 1e-4))
@@ -196,7 +220,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     # MAPPING ENGINE
     # ---------------------------------------------------------
     def get_mapping(u, v):
-        """Maps 2D U, V coordinates to 3D position, normal, and local tangent vectors."""
         if mapping == "Cylindrical":
             theta = u / R
             pos = App.Vector(Cx + R * math.cos(theta), Cy + R * math.sin(theta), v)
@@ -363,8 +386,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                 elif pattern == "Square":
                     r_sq = tile_radius
                     local_pts = [(-r_sq, -r_sq), (r_sq, -r_sq), (r_sq, r_sq), (-r_sq, r_sq)]
-                elif "Circle" in pattern:
-                    pass
 
                 if "Circle" in pattern:
                     circle_edge = Part.makeCircle(tile_radius, base_pos, norm)
@@ -445,8 +466,24 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     pillars = Part.makeCompound(pillar_solids)
 
     # ---------------------------------------------------------
-    # FINAL BOOLEAN
+    # FINAL BOOLEAN & WARNING LOGIC
     # ---------------------------------------------------------
+    if len(pattern_faces) > 200:
+        if preview_mode:
+            App.Console.PrintWarning(f"High pattern density ({len(pattern_faces)} tiles). Skipping exact boolean against target shape during preview to prevent freezing.\n")
+            # Returns just the pillar bounding grid so the user still gets a fast live visual!
+            return pillars
+        else:
+            reply = QtWidgets.QMessageBox.question(
+                Gui.getMainWindow(),
+                "Heavy Boolean Warning",
+                f"You are about to process {len(pattern_faces)} lattice pillars.\nThis boolean operation may take several minutes and temporarily freeze FreeCAD.\n\nDo you want to continue?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No
+            )
+            if reply == QtWidgets.QMessageBox.No:
+                return None
+
     if mode == "cut":
         return target_shape.cut(pillars)
     else:
@@ -493,11 +530,33 @@ class PatternTaskPanel(BaseTaskPanel):
             self.form.border_spin.value(),
             self.form.fillet_spin.value(),
             self.form.mapping_combo.currentText(),
-            self.form.depth_spin.value()
+            self.form.depth_spin.value(),
+            preview_mode=True # Defers heavy booleans
         )
 
     def generate_final(self):
-        shape = self.calculate_preview()
+        mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
+        shape = calculate_pattern_shape(
+            self.target_obj,
+            self.form.pattern_combo.currentText(),
+            self.form.radius_spin.value(),
+            self.form.gap_spin.value(),
+            mode,
+            self.form.offset_x_spin.value(),
+            self.form.offset_y_spin.value(),
+            self.form.threshold_spin.value(),
+            self.form.border_spin.value(),
+            self.form.fillet_spin.value(),
+            self.form.mapping_combo.currentText(),
+            self.form.depth_spin.value(),
+            preview_mode=False # Enforces exact boolean calculations
+        )
+        
+        # In case the user aborted due to the Heavy Boolean MessageBox
+        if shape is None:
+            App.Console.PrintWarning("Lattice generation cancelled by user.\n")
+            return
+
         mode_text = "Lattice" if self.form.operation_combo.currentIndex() == 0 else "Panels"
         final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
         final_obj.Shape = shape
