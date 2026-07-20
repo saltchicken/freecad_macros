@@ -32,18 +32,18 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     target_shape = target_obj.Shape
     step_radius = tile_radius + gap
     pattern_faces = []
-    
+
     # Calculate geometric centers and max dimensions
     Cx = (bbox.XMax + bbox.XMin) / 2.0
     Cy = (bbox.YMax + bbox.YMin) / 2.0
     Cz = (bbox.ZMax + bbox.ZMin) / 2.0
     max_dim = max(bbox.XMax - bbox.XMin, bbox.YMax - bbox.YMin, bbox.ZMax - bbox.ZMin)
-    
+
     # Set up UV Bounding Box depending on mapping mode
     R = max(bbox.XMax - bbox.XMin, bbox.YMax - bbox.YMin) / 2.0
     if mapping == "Spherical":
         R = max_dim / 2.0
-        
+
     if mapping == "Cylindrical":
         u_min, u_max = 0.0, 2 * math.pi * R
         v_min, v_max = bbox.ZMin, bbox.ZMax
@@ -65,28 +65,28 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             plane = Part.makePlane((bbox.XMax - bbox.XMin) + 200, (bbox.YMax - bbox.YMin) + 200,
                                    App.Vector(bbox.XMin - 100, bbox.YMin - 100, z_mid), App.Vector(0,0,1))
             cross_section = shape.section(plane)
-            
+
             if not cross_section.Edges:
                 return None
-                
+
             wires = DraftGeomUtils.findWires(cross_section.Edges)
             closed_wires = [w for w in wires if w.isClosed()]
-            if not closed_wires: 
+            if not closed_wires:
                 return None
-                
+
             try:
                 closed_wires.sort(key=lambda w: w.Length, reverse=True)
                 base_face = Part.Face(closed_wires[0])
             except Exception as e:
                 App.Console.PrintWarning(f"Could not create face from cross section: {e}\n")
                 return None
-                    
+
         try:
             if border > 0.0:
                 offset_shape = base_face.makeOffset2D(-border)
                 if isinstance(offset_shape, list) and offset_shape:
                     offset_shape = offset_shape[0]
-                    
+
                 if offset_shape and not offset_shape.isNull():
                     if offset_shape.ShapeType == "Wire":
                         offset_shape = Part.Face(offset_shape)
@@ -100,7 +100,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         except Exception as e:
             App.Console.PrintWarning(f"Margin offset error: {e}\n")
             return None
-            
+
         return None
 
     boundary_face = None
@@ -124,16 +124,16 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     def is_tile_valid(tile_face, test_pts):
         if inclusion_threshold <= 0.0:
             return True
-        
+
         # Complex shape validation is bypassed for now as boolean handles 3D culling
         if mapping != "Planar":
             return True
-            
+
         if inclusion_threshold >= 99.9:
             for pt in test_pts:
                 if not is_point_inside(pt.x, pt.y): return False
             return True
-            
+
         if boundary_face:
             try:
                 intersect = tile_face.common(boundary_face)
@@ -141,8 +141,8 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                     ratio = intersect.Area / tile_face.Area
                     return ratio >= (inclusion_threshold / 100.0)
             except Exception:
-                pass 
-                
+                pass
+
         pts_to_check = test_pts[:-1] if (len(test_pts) > 1 and test_pts[0].isEqual(test_pts[-1], 1e-5)) else test_pts
         if not pts_to_check: return False
         inside_count = sum(1 for p in pts_to_check if is_point_inside(p.x, p.y))
@@ -169,13 +169,13 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             )
             norm = App.Vector(math.cos(theta)*math.sin(phi), math.sin(theta)*math.sin(phi), math.cos(phi))
             norm.normalize()
-            
+
             tan_u = App.Vector(-math.sin(theta), math.cos(theta), 0)
             if tan_u.Length > 1e-4:
                 tan_u.normalize()
             else:
                 tan_u = App.Vector(1, 0, 0)
-                
+
             tan_v = norm.cross(tan_u)
             tan_v.normalize()
         else: # Planar
@@ -183,7 +183,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             norm = App.Vector(0, 0, 1)
             tan_u = App.Vector(1, 0, 0)
             tan_v = App.Vector(0, 1, 0)
-            
+
         return pos, norm, tan_u, tan_v
 
     # ---------------------------------------------------------
@@ -198,7 +198,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         cols = int((u_max - u_min) / dx) + 6
         rows = int((v_max - v_min) / dy) + 6
         seed_points = []
-        
+
         random.seed(hash((offset_x, offset_y)))
 
         for c in range(-4, cols + 4):
@@ -214,10 +214,10 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         for region_index in vor.point_region:
             region = vor.regions[region_index]
             if not region or -1 in region:
-                continue 
+                continue
 
             raw_uv = [(vor.vertices[i][0], vor.vertices[i][1]) for i in region]
-            
+
             centroid_u = sum(p[0] for p in raw_uv) / len(raw_uv)
             centroid_v = sum(p[1] for p in raw_uv) / len(raw_uv)
 
@@ -227,10 +227,10 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             if mapping == "Spherical":
                 if centroid_v < (v_min + offset_y) or centroid_v > (v_max + offset_y):
                     continue
-            
+
             pos, norm, tan_u, tan_v = get_mapping(centroid_u, centroid_v)
             base_pos = pos if mapping == "Planar" else (pos + norm * 5.0)
-            
+
             inset_pts_3d = []
             for p in raw_uv:
                 vec_u = p[0] - centroid_u
@@ -240,20 +240,20 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                 if dist > 1e-5:
                     vec_u /= dist
                     vec_v /= dist
-                
+
                 final_u = p[0] - vec_u * move_dist
                 final_v = p[1] - vec_v * move_dist
-                
+
                 dx_loc = final_u - centroid_u
                 dy_loc = final_v - centroid_v
-                
+
                 pt_3d = base_pos + tan_u * dx_loc + tan_v * dy_loc
                 inset_pts_3d.append(pt_3d)
-            
-            inset_pts_3d.append(inset_pts_3d[0]) 
+
+            inset_pts_3d.append(inset_pts_3d[0])
             polygon = Part.makePolygon(inset_pts_3d)
             tile_face = Part.Face(polygon)
-            
+
             if is_tile_valid(tile_face, inset_pts_3d):
                 pattern_faces.append((tile_face, norm))
 
@@ -285,13 +285,11 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         if mapping in ["Cylindrical", "Spherical"]:
             circumference = 2 * math.pi * R
             target_cols = max(2, round(circumference / dx))
-            
-            # Staggered patterns require an EVEN number of columns to close the seam properly
+
             if is_staggered and target_cols % 2 != 0:
-                target_cols += 1 
-                
-            # Recalculate dx so the tiles fit the circumference flawlessly without overlapping
-            dx = circumference / target_cols 
+                target_cols += 1
+
+            dx = circumference / target_cols
             c_start, c_end = 0, target_cols
         else:
             target_cols = int((u_max - u_min) / dx) + 4
@@ -306,9 +304,8 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
 
                 if c % 2 != 0:
                     v += odd_y_offset
-                    
+
                 if mapping == "Spherical":
-                    # Cull tiles spilling over the poles
                     if v < v_min or v > v_max:
                         continue
 
@@ -325,7 +322,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                     local_pts = [(-r_sq, -r_sq), (r_sq, -r_sq), (r_sq, r_sq), (-r_sq, r_sq)]
                 elif "Circle" in pattern:
                     pass # Done directly via MakeCircle
-                
+
                 if "Circle" in pattern:
                     circle_edge = Part.makeCircle(tile_radius, base_pos, norm)
                     tile_face = Part.Face(Part.Wire(circle_edge))
@@ -356,12 +353,12 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
 
     for tile_face, norm in pattern_faces:
         if mapping == "Planar":
-            extrude_vec = App.Vector(0, 0, z_height) 
+            extrude_vec = App.Vector(0, 0, z_height)
         else:
             extrude_vec = -norm * (extrude_depth + 10.0)
-            
+
         pillar = tile_face.extrude(extrude_vec)
-        
+
         if fillet_radius > 0.0 and "Circle" not in pattern:
             edges_to_fillet = []
             for e in pillar.Edges:
@@ -369,9 +366,9 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                     v_dir = e.Vertexes[1].Point - e.Vertexes[0].Point
                     if v_dir.Length > 1e-4:
                         v_dir.normalize()
-                        if abs(v_dir.dot(norm)) > 0.999: # Parallel to normal
+                        if abs(v_dir.dot(norm)) > 0.999:
                             edges_to_fillet.append(e)
-            
+
             if edges_to_fillet:
                 try:
                     filleted_pillar = pillar.makeFillet(fillet_radius, edges_to_fillet)
@@ -389,6 +386,23 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     # ---------------------------------------------------------
     if margin_volume and mapping == "Planar":
         pillars = pillars.common(margin_volume)
+
+    # NEW LOGIC: Cylindrical/Spherical top and bottom margins
+    elif mapping in ["Cylindrical", "Spherical"] and border_size > 0.0:
+        z_min = bbox.ZMin + border_size
+        z_max = bbox.ZMax - border_size
+
+        if z_max > z_min:
+            # Create a massive bounding box to represent the allowed "cut" zone
+            safe_size = max_dim * 2.0 + 100.0
+            safe_box = Part.makeBox(safe_size, safe_size, z_max - z_min)
+            # Center the box horizontally and place it at the starting Z margin
+            safe_box.translate(App.Vector(Cx - safe_size/2.0, Cy - safe_size/2.0, z_min))
+
+            # Slice the cutting pillars so they cannot cut past the margins
+            pillars = pillars.common(safe_box)
+        else:
+            App.Console.PrintWarning("Border margin is too large for the object's height. Ignoring.\n")
 
     if mode == "cut":
         return target_shape.cut(pillars)
@@ -419,7 +433,7 @@ class PatternTaskPanel:
         self.pattern_combo.addItems(["Hexagon", "Square", "Circle (Staggered)", "Circle (Grid)", "Voronoi (Organic)"])
         self.pattern_combo.setToolTip("Select the geometric shape of the lattice.")
         form_layout.addRow("Pattern Shape:", self.pattern_combo)
-        
+
         self.mapping_combo = QtWidgets.QComboBox()
         self.mapping_combo.addItems(["Planar", "Cylindrical", "Spherical"])
         self.mapping_combo.setToolTip("How the pattern projects onto the shape. Cylindrical and Spherical wrap the pattern around the center.")
@@ -440,7 +454,7 @@ class PatternTaskPanel:
         self.gap_spin.setToolTip("The space between tiles (creates the lattice walls).")
         self.gap_spin.setKeyboardTracking(False)
         form_layout.addRow("Gap Size:", self.gap_spin)
-        
+
         self.depth_spin = QtWidgets.QDoubleSpinBox()
         self.depth_spin.setRange(0.1, 1000.0)
         self.depth_spin.setValue(5.0)
@@ -456,12 +470,12 @@ class PatternTaskPanel:
         self.fillet_spin.setToolTip("Radius to round the interior corners. (Set to 0 to disable). If radius is too large for the tile, corners stay sharp.")
         self.fillet_spin.setKeyboardTracking(False)
         form_layout.addRow("Corner Fillet:", self.fillet_spin)
-        
+
         self.border_spin = QtWidgets.QDoubleSpinBox()
         self.border_spin.setRange(0.0, 500.0)
         self.border_spin.setValue(0.0)
         self.border_spin.setSuffix(" mm")
-        self.border_spin.setToolTip("Leave a solid border/margin along the edges. (Currently applies to Planar only)")
+        self.border_spin.setToolTip("Planar: Margin along edges.\nCylindrical/Spherical: Leaves a solid un-cut band at the top and bottom.")
         self.border_spin.setKeyboardTracking(False)
         form_layout.addRow("Border Margin:", self.border_spin)
 
