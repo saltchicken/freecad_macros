@@ -476,6 +476,8 @@ class PatternTaskPanel(BaseTaskPanel):
         self.form.offset_x_spin.valueChanged.connect(self.queue_preview)
         self.form.offset_y_spin.valueChanged.connect(self.queue_preview)
         self.form.operation_combo.currentIndexChanged.connect(self.queue_preview)
+        if hasattr(self.form, "live_preview_cb"):
+            self.form.live_preview_cb.toggled.connect(self.queue_preview)
 
     def calculate_preview(self):
         mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"

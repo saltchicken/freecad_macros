@@ -42,6 +42,9 @@ class BaseTaskPanel:
 
     def _trigger_preview(self):
         """Internal method executed when the timer finishes."""
+        if hasattr(self.form, "live_preview_cb") and not self.form.live_preview_cb.isChecked():
+            return
+
         try:
             shape = self.calculate_preview()
             if shape and not shape.isNull():
