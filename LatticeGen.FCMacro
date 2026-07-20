@@ -28,7 +28,7 @@ importlib.reload(MacroShared)
 # CORE LOGIC
 # ==========================================
 
-def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0, fillet_radius=0.0, mapping="Planar", extrude_depth=5.0, preview_mode=False):
+def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=0.5, mode="cut", offset_x=0.0, offset_y=0.0, inclusion_threshold=0.0, border_size=0.0, fillet_radius=0.0, mapping="Planar", extrude_depth=5.0, preview_mode=False, return_tools_only=False):
     """
     Calculates and returns the resulting Shape of a patterned lattice applied to target_obj.
     Supports Planar, Cylindrical, and Spherical mapping modes.
@@ -471,7 +471,6 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     if len(pattern_faces) > 200:
         if preview_mode:
             App.Console.PrintWarning(f"High pattern density ({len(pattern_faces)} tiles). Skipping exact boolean against target shape during preview to prevent freezing.\n")
-            # Returns just the pillar bounding grid so the user still gets a fast live visual!
             return pillars
         else:
             reply = QtWidgets.QMessageBox.question(
@@ -483,6 +482,10 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             )
             if reply == QtWidgets.QMessageBox.No:
                 return None
+
+    # NEW: If we just need the tool solids for a PartDesign Boolean, return them raw.
+    if return_tools_only:
+        return pillars
 
     if mode == "cut":
         return target_shape.cut(pillars)
@@ -536,31 +539,69 @@ class PatternTaskPanel(BaseTaskPanel):
 
     def generate_final(self):
         mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
-        shape = calculate_pattern_shape(
-            self.target_obj,
-            self.form.pattern_combo.currentText(),
-            self.form.radius_spin.value(),
-            self.form.gap_spin.value(),
-            mode,
-            self.form.offset_x_spin.value(),
-            self.form.offset_y_spin.value(),
-            self.form.threshold_spin.value(),
-            self.form.border_spin.value(),
-            self.form.fillet_spin.value(),
-            self.form.mapping_combo.currentText(),
-            self.form.depth_spin.value(),
-            preview_mode=False # Enforces exact boolean calculations
-        )
-        
-        # In case the user aborted due to the Heavy Boolean MessageBox
-        if shape is None:
-            App.Console.PrintWarning("Lattice generation cancelled by user.\n")
-            return
+        active_body = MacroShared.get_active_body(self.target_obj)
 
-        mode_text = "Lattice" if self.form.operation_combo.currentIndex() == 0 else "Panels"
-        final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
-        final_obj.Shape = shape
-        self.target_obj.Visibility = False
+        if active_body:
+            # NATIVE PARTDESIGN WORKFLOW
+            # Get only the raw lattice pillars (the cutting tool)
+            tool_shape = calculate_pattern_shape(
+                self.target_obj, self.form.pattern_combo.currentText(),
+                self.form.radius_spin.value(), self.form.gap_spin.value(), mode,
+                self.form.offset_x_spin.value(), self.form.offset_y_spin.value(),
+                self.form.threshold_spin.value(), self.form.border_spin.value(),
+                self.form.fillet_spin.value(), self.form.mapping_combo.currentText(),
+                self.form.depth_spin.value(), preview_mode=False,
+                return_tools_only=True # Get just the pillars
+            )
+            
+            if tool_shape is None:
+                return
+
+            # Store the pillars in a hidden tool object outside the body
+            tool_name = f"{self.target_obj.Name}_LatticeTools"
+            tool_obj = App.ActiveDocument.addObject("Part::Feature", tool_name)
+            tool_obj.Shape = tool_shape
+            tool_obj.Visibility = False
+
+            # Create a native PartDesign Boolean inside the active body
+            bool_feat = active_body.newObject("PartDesign::Boolean", f"{self.target_obj.Name}_Lattice")
+            
+            # Type: 1 = Subtract (Cut), 2 = Intersect (Common)
+            bool_feat.Type = 1 if mode == "cut" else 2
+            bool_feat.Group = [tool_obj]
+            
+            # FreeCAD automatically updates Body visibility and tip, so just recompute
+            App.ActiveDocument.recompute()
+            
+        else:
+            # FALLBACK: STANDARD PART WORKFLOW (No active body found)
+            App.Console.PrintWarning("No active PartDesign Body found. Generating as a standard Part feature.\n")
+            
+            shape = calculate_pattern_shape(
+                self.target_obj, self.form.pattern_combo.currentText(),
+                self.form.radius_spin.value(), self.form.gap_spin.value(), mode,
+                self.form.offset_x_spin.value(), self.form.offset_y_spin.value(),
+                self.form.threshold_spin.value(), self.form.border_spin.value(),
+                self.form.fillet_spin.value(), self.form.mapping_combo.currentText(),
+                self.form.depth_spin.value(), preview_mode=False,
+                return_tools_only=False
+            )
+            
+            if shape is None:
+                return
+
+            mode_text = "Lattice" if mode == "cut" else "Panels"
+            final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
+            final_obj.Shape = shape
+            self.target_obj.Visibility = False
+
+            group_name = "Generated_Lattices"
+            group = App.ActiveDocument.getObject(group_name)
+            if not group:
+                group = App.ActiveDocument.addObject("App::DocumentObjectGroup", group_name)
+                group.Label = "Generated Lattices"
+                
+            group.addObject(final_obj)
 
     def reject(self):
         self.target_obj.Visibility = True
