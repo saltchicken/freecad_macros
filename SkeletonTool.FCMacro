@@ -3,27 +3,18 @@ import FreeCADGui as Gui
 import Part
 import os
 
-# Import our new base class
 from SharedLib.UI import BaseTaskPanel
-
-# ==========================================
-# TOOL IMPLEMENTATION
-# ==========================================
 
 class SkeletonTaskPanel(BaseTaskPanel):
     def __init__(self):
-        # Resolve the absolute path to the .ui file
         macro_dir = os.path.dirname(os.path.abspath(__file__))
         ui_path = os.path.join(macro_dir, "ui", "skeleton_panel.ui")
-        
-        # Pass the UI file to the Base Class to handle setup
+
         super().__init__(ui_path)
 
     def setup_ui(self):
         """Link the Qt Designer UI widgets to the debouncer."""
-        # 'self.form.param_spin' is automatically mapped from the name in the .ui file
-        # We connect it to 'queue_preview' instead of calculating instantly
-        self.form.param_spin.valueChanged.connect(self.queue_preview)
+        self.form.param_spin.valueChanged.connect(self.queue_preview) # Auto mapped from .ui file
 
     def calculate_preview(self):
         """Fast, lightweight math for live preview."""
@@ -34,17 +25,12 @@ class SkeletonTaskPanel(BaseTaskPanel):
         """Heavy generation when OK is clicked."""
         doc = App.ActiveDocument
         size = self.form.param_spin.value()
-        
+
         new_obj = doc.addObject("Part::Box", "FinalObject")
         new_obj.Length = size
         new_obj.Width = size
         new_obj.Height = size
         doc.recompute()
-
-
-# ==========================================
-# LAUNCHER
-# ==========================================
 
 if not App.ActiveDocument:
     App.Console.PrintError("Error: You must have an active document open.\n")
