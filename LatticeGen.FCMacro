@@ -1,6 +1,7 @@
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
+import PartDesign  # Added to ensure the C++ factory and Python wrappers load fully
 import math
 import random
 import os
@@ -482,7 +483,7 @@ class PatternTaskPanel(BaseTaskPanel):
         self.form.offset_x_spin.valueChanged.connect(self.queue_preview)
         self.form.offset_y_spin.valueChanged.connect(self.queue_preview)
         self.form.operation_combo.currentIndexChanged.connect(self.queue_preview)
-        
+
         # Connect the new toggle
         if hasattr(self.form, 'preview_toggle_check'):
             self.form.preview_toggle_check.stateChanged.connect(self.queue_preview)
@@ -520,7 +521,7 @@ class PatternTaskPanel(BaseTaskPanel):
                 orig_trans = getattr(self.target_obj.ViewObject, 'Transparency', 0)
                 self.preview_obj.ViewObject.ShapeColor = orig_color
                 self.preview_obj.ViewObject.Transparency = orig_trans
-                
+
             return self.get_shape(return_tool=False)
         else:
             # Mode: Show Cutting Tool (Show target, make tool red/transparent)
@@ -528,19 +529,71 @@ class PatternTaskPanel(BaseTaskPanel):
             if self.has_preview and hasattr(self, 'preview_obj') and self.preview_obj.ViewObject:
                 self.preview_obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0)  # Red
                 self.preview_obj.ViewObject.Transparency = 50
-                
+
             return self.get_shape(return_tool=True)
 
     def generate_final(self):
-        shape = self.get_shape(return_tool=False)
-        mode_text = "Lattice" if self.form.operation_combo.currentIndex() == 0 else "Panels"
-        final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
-        final_obj.Shape = shape
-        
-        # Always hide target and apply its styles to the final object
-        self.target_obj.Visibility = False
-        if final_obj.ViewObject and self.target_obj.ViewObject:
-            final_obj.ViewObject.ShapeColor = getattr(self.target_obj.ViewObject, 'ShapeColor', (0.8, 0.8, 0.8))
+        # Try to locate the Active PartDesign Body
+        active_body = MacroShared.get_active_body(self.target_obj)
+
+        if active_body:
+            # --- Native Part Design Workflow ---
+            # Retrieve the tool shape (the raw extruded pillars/panels)
+            tool_shape = self.get_shape(return_tool=True)
+
+            is_cut = self.form.operation_combo.currentIndex() == 0
+            mode_text = "LatticeCut" if is_cut else "LatticePanel"
+
+            # Generate the tool object to be used by the Boolean operation
+            tool_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_Tool")
+            tool_obj.Shape = tool_shape
+            tool_obj.Visibility = False
+
+            # Create a native PartDesign Boolean inside the active body
+            bool_feat = active_body.newObject("PartDesign::Boolean", mode_text)
+
+            if hasattr(bool_feat, "Group"):
+                bool_feat.Group = [tool_obj]
+
+            # Safely attempt to set the operation type. 
+            # If missing, automatically fail-safe to Standalone Part fallback rather than crashing.
+            if hasattr(bool_feat, "Operation"):
+                # PartDesign Boolean Operation enum: 0 = Additive, 1 = Subtractive, 2 = Intersect
+                bool_feat.Operation = 1 if is_cut else 2
+            else:
+                # TODO: This is currently triggering, find a way to fix this
+                App.Console.PrintWarning("Native PartDesign Boolean failed (missing 'Operation'). Using Standalone Fallback.\n")
+                if bool_feat:
+                    active_body.removeObject(bool_feat)
+                if tool_obj:
+                    App.ActiveDocument.removeObject(tool_obj.Name)
+
+                # Fallback logic identical to the non-Body branch
+                shape = self.get_shape(return_tool=False)
+                mode_text_fallback = "Lattice" if is_cut else "Panels"
+                final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text_fallback}")
+                final_obj.Shape = shape
+
+                self.target_obj.Visibility = False
+                if final_obj.ViewObject and self.target_obj.ViewObject:
+                    final_obj.ViewObject.ShapeColor = getattr(self.target_obj.ViewObject, 'ShapeColor', (0.8, 0.8, 0.8))
+                return
+
+            # Ensure the previous tip is hidden and copy colors
+            self.target_obj.Visibility = False
+            if bool_feat.ViewObject and self.target_obj.ViewObject:
+                bool_feat.ViewObject.ShapeColor = getattr(self.target_obj.ViewObject, 'ShapeColor', (0.8, 0.8, 0.8))
+
+        else:
+            # --- Standalone Part Fallback (If not using a PartDesign Body) ---
+            shape = self.get_shape(return_tool=False)
+            mode_text = "Lattice" if self.form.operation_combo.currentIndex() == 0 else "Panels"
+            final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
+            final_obj.Shape = shape
+
+            self.target_obj.Visibility = False
+            if final_obj.ViewObject and self.target_obj.ViewObject:
+                final_obj.ViewObject.ShapeColor = getattr(self.target_obj.ViewObject, 'ShapeColor', (0.8, 0.8, 0.8))
 
     def reject(self):
         self.target_obj.Visibility = True
