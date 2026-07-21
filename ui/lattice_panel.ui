@@ -47,6 +47,14 @@
        <item><property name="text"><string>Common (Create Panels)</string></property></item>
       </widget>
      </item>
+     
+     <!-- NEW: Preview Toggle row -->
+     <item row="11" column="0"><widget class="QLabel"><property name="text"><string>Preview Mode:</string></property></widget></item>
+     <item row="11" column="1">
+      <widget class="QCheckBox" name="preview_toggle_check">
+       <property name="text"><string>Show Final Product</string></property>
+      </widget>
+     </item>
     </layout>
    </item>
    <item><spacer><property name="orientation"><enum>Qt::Vertical</enum></property></spacer></item>

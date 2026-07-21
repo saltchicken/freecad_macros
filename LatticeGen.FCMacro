@@ -468,11 +468,6 @@ class PatternTaskPanel(BaseTaskPanel):
         self.target_obj = target_obj
         ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "lattice_panel.ui")
         super().__init__(ui_path, has_preview=True)
-        
-        # Style the preview object to look like a red transparent cutting tool
-        if self.has_preview and hasattr(self, 'preview_obj') and self.preview_obj.ViewObject:
-            self.preview_obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0)
-            self.preview_obj.ViewObject.Transparency = 50
 
     def setup_ui(self):
         # Connect all inputs to the debouncer
@@ -487,8 +482,12 @@ class PatternTaskPanel(BaseTaskPanel):
         self.form.offset_x_spin.valueChanged.connect(self.queue_preview)
         self.form.offset_y_spin.valueChanged.connect(self.queue_preview)
         self.form.operation_combo.currentIndexChanged.connect(self.queue_preview)
+        
+        # Connect the new toggle
+        if hasattr(self.form, 'preview_toggle_check'):
+            self.form.preview_toggle_check.stateChanged.connect(self.queue_preview)
 
-    def get_shape(self, preview=True):
+    def get_shape(self, return_tool=True):
         mode = "cut" if self.form.operation_combo.currentIndex() == 0 else "common"
         return calculate_pattern_shape(
             self.target_obj,
@@ -503,20 +502,45 @@ class PatternTaskPanel(BaseTaskPanel):
             self.form.fillet_spin.value(),
             self.form.mapping_combo.currentText(),
             self.form.depth_spin.value(),
-            return_tool=preview
+            return_tool=return_tool
         )
 
     def calculate_preview(self):
-        # Only return the "tool" (red transparent pillars) during the live preview
-        return self.get_shape(preview=True)
+        # Determine preview mode based on checkbox
+        show_final = False
+        if hasattr(self.form, 'preview_toggle_check'):
+            show_final = self.form.preview_toggle_check.isChecked()
+
+        if show_final:
+            # Mode: Show Final Product (Hide target, standard preview color)
+            self.target_obj.Visibility = False
+            if self.has_preview and hasattr(self, 'preview_obj') and self.preview_obj.ViewObject:
+                # Inherit styling from the target object
+                orig_color = getattr(self.target_obj.ViewObject, 'ShapeColor', (0.8, 0.8, 0.8))
+                orig_trans = getattr(self.target_obj.ViewObject, 'Transparency', 0)
+                self.preview_obj.ViewObject.ShapeColor = orig_color
+                self.preview_obj.ViewObject.Transparency = orig_trans
+                
+            return self.get_shape(return_tool=False)
+        else:
+            # Mode: Show Cutting Tool (Show target, make tool red/transparent)
+            self.target_obj.Visibility = True
+            if self.has_preview and hasattr(self, 'preview_obj') and self.preview_obj.ViewObject:
+                self.preview_obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0)  # Red
+                self.preview_obj.ViewObject.Transparency = 50
+                
+            return self.get_shape(return_tool=True)
 
     def generate_final(self):
-        # Generate the final boolean geometry
-        shape = self.get_shape(preview=False)
+        shape = self.get_shape(return_tool=False)
         mode_text = "Lattice" if self.form.operation_combo.currentIndex() == 0 else "Panels"
         final_obj = App.ActiveDocument.addObject("Part::Feature", f"{self.target_obj.Name}_{mode_text}")
         final_obj.Shape = shape
+        
+        # Always hide target and apply its styles to the final object
         self.target_obj.Visibility = False
+        if final_obj.ViewObject and self.target_obj.ViewObject:
+            final_obj.ViewObject.ShapeColor = getattr(self.target_obj.ViewObject, 'ShapeColor', (0.8, 0.8, 0.8))
 
     def reject(self):
         self.target_obj.Visibility = True
