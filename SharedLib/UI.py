@@ -1,12 +1,7 @@
-<file path="SharedLib/UI.py">
 import FreeCAD as App
 import FreeCADGui as Gui
-
-# Cross-compatible Qt import for FreeCAD 0.21 (Qt5) and FreeCAD 1.0+ (Qt6)
-try:
-    from PySide6 import QtCore, QtWidgets
-except ImportError:
-    from PySide2 import QtCore, QtWidgets
+from PySide6 import QtCore
+from PySide6 import QtWidgets
 
 
 class BaseTaskPanel:
@@ -18,7 +13,6 @@ class BaseTaskPanel:
     def __init__(self, ui_file_path, has_preview=True):
         self.form = Gui.PySideUic.loadUi(ui_file_path)
         self.has_preview = has_preview
-        self.preview_obj = None
 
         if self.has_preview:
             # Setup Debouncer (QTimer) to prevent FreeCAD freezing during slider drags
@@ -27,8 +21,10 @@ class BaseTaskPanel:
             self.preview_timer.setInterval(150)  # 150ms delay
             self.preview_timer.timeout.connect(self._trigger_preview)
 
-            # Create a temporary object for the live preview without holding a transaction open
-            self.preview_obj = App.ActiveDocument.addObject("Part::Feature", "PreviewObject")
+            # Start a preview transaction so we can safely undo
+            App.ActiveDocument.openTransaction("Preview Transaction")
+            self.preview_obj = App.ActiveDocument.addObject(
+                "Part::Feature", "PreviewObject")
 
         self.setup_ui()
 
@@ -46,12 +42,9 @@ class BaseTaskPanel:
 
     def _trigger_preview(self):
         """Internal method executed when the timer finishes."""
-        if hasattr(self.form, "live_preview_cb") and not self.form.live_preview_cb.isChecked():
-            return
-
         try:
             shape = self.calculate_preview()
-            if shape and not shape.isNull() and self.preview_obj:
+            if shape and not shape.isNull():
                 self.preview_obj.Shape = shape
                 App.ActiveDocument.recompute()
         except Exception as e:
@@ -72,11 +65,9 @@ class BaseTaskPanel:
                 QtWidgets.QDialogButtonBox.Cancel).value
 
     def accept(self):
-        # 1. Clean up the temporary preview object safely
-        if self.has_preview and self.preview_obj:
-            App.ActiveDocument.removeObject(self.preview_obj.Name)
+        if self.has_preview:
+            App.ActiveDocument.abortTransaction()
 
-        # 2. Open a clean transaction for the actual generation
         App.ActiveDocument.openTransaction("Apply Tool")
         try:
             self.generate_final()
@@ -88,10 +79,6 @@ class BaseTaskPanel:
         Gui.Control.closeDialog()
 
     def reject(self):
-        # Clean up the temporary preview object on cancellation
-        if self.has_preview and self.preview_obj:
-            App.ActiveDocument.removeObject(self.preview_obj.Name)
-            App.ActiveDocument.recompute()
-            
+        if self.has_preview:
+            App.ActiveDocument.abortTransaction()
         Gui.Control.closeDialog()
-</file>
