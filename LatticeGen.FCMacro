@@ -96,7 +96,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
 
             if offset_shape and not offset_shape.isNull():
                 current_z = offset_shape.BoundBox.ZMin
-                offset_shape.translate(App.Vector(0, 0, bbox.ZMin - 10 - current_z))
+                offset_shape.translate(App.Vector(0, 0, bbox.ZMin - 1.0 - current_z))
                 return offset_shape
         except Exception as e:
             App.Console.PrintWarning(f"Margin offset error: {e}\n")
@@ -117,7 +117,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         boundary_face = get_boundary_face(target_shape, border_size) if border_size > 0.0 else original_boundary_face
 
         if boundary_face:
-            margin_volume = boundary_face.extrude(App.Vector(0, 0, bbox.ZMax + 20 - (bbox.ZMin - 10)))
+            margin_volume = boundary_face.extrude(App.Vector(0, 0, bbox.ZMax + 2.0 - (bbox.ZMin - 1.0)))
         else:
             if border_size > 0.0:
                 App.Console.PrintWarning("Border margin calculation failed. Returning original shape.\n")
@@ -139,7 +139,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
         original_bounds_box.translate(App.Vector(Cx - safe_size/2.0, Cy - safe_size/2.0, bbox.ZMin))
 
     def is_point_inside_original(px, py):
-        line = Part.makeLine(App.Vector(px, py, bbox.ZMin - 10), App.Vector(px, py, bbox.ZMax + 10))
+        line = Part.makeLine(App.Vector(px, py, bbox.ZMin - 1.0), App.Vector(px, py, bbox.ZMax + 1.0))
         return line.distToShape(target_shape)[0] <= 1e-4
 
     def is_tile_valid(tile_face, test_pts):
@@ -225,7 +225,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             tan_v = norm.cross(tan_u)
             tan_v.normalize()
         else: # Planar
-            pos = App.Vector(u, v, bbox.ZMin - 10)
+            pos = App.Vector(u, v, bbox.ZMin - 1.0)
             norm = App.Vector(0, 0, 1)
             tan_u = App.Vector(1, 0, 0)
             tan_v = App.Vector(0, 1, 0)
@@ -241,14 +241,14 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             return Part.makeCompound([]) if return_tool else target_obj.Shape.copy()
 
         dx = dy = 1.5 * step_radius
-        cols = int((u_max - u_min) / dx) + 6
-        rows = int((v_max - v_min) / dy) + 6
+        cols = int((u_max - u_min) / dx) + 2
+        rows = int((v_max - v_min) / dy) + 2
         seed_points = []
 
         random.seed(hash((offset_x, offset_y)))
 
-        for c in range(-4, cols + 4):
-            for r in range(-4, rows + 4):
+        for c in range(-1, cols + 1):
+            for r in range(-1, rows + 1):
                 u = u_min + c * dx + offset_x
                 v = v_min + r * dy + offset_y
                 u += random.uniform(-0.45, 0.45) * dx
@@ -337,13 +337,13 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
             dx = circumference / target_cols
             c_start, c_end = 0, target_cols
         else:
-            target_cols = int((u_max - u_min) / dx) + 4
-            c_start, c_end = -4, target_cols
+            target_cols = int((u_max - u_min) / dx) + 2
+            c_start, c_end = -1, target_cols
 
-        rows = int((v_max - v_min) / dy) + 4
+        rows = int((v_max - v_min) / dy) + 2
 
         for c in range(c_start, c_end):
-            for r in range(-4, rows + 4):
+            for r in range(-1, rows):
                 u = u_min + c * dx + offset_x
                 v = v_min + r * dy + offset_y
 
@@ -355,7 +355,7 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
                         continue
 
                 pos, norm, tan_u, tan_v = get_mapping(u, v)
-                base_pos = pos if mapping == "Planar" else (pos + norm * 5.0)
+                base_pos = pos if mapping == "Planar" else (pos + norm * 1.0)
 
                 local_pts = []
                 if pattern == "Hexagon":
@@ -396,14 +396,14 @@ def calculate_pattern_shape(target_obj, pattern="Hexagon", tile_radius=5.0, gap=
     # ---------------------------------------------------------
     # EXTRUDE, FILLET, AND SLICE (INDIVIDUALLY)
     # ---------------------------------------------------------
-    z_height = (bbox.ZMax - bbox.ZMin + 20)
+    z_height = (bbox.ZMax - bbox.ZMin + 2.0)
     pillar_solids = []
 
     for tile_face, norm in pattern_faces:
         if mapping == "Planar":
             extrude_vec = App.Vector(0, 0, z_height)
         else:
-            extrude_vec = -norm * (extrude_depth + 10.0)
+            extrude_vec = -norm * (extrude_depth + 2.0)
 
         pillar = tile_face.extrude(extrude_vec)
 
