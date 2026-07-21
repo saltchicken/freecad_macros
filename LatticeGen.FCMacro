@@ -177,16 +177,25 @@ def calculate_pattern_shape(target_obj, target_face=None, pattern="Hexagon", til
     # ---------------------------------------------------------
     # ADVANCED MAPPING ENGINE
     # ---------------------------------------------------------
-    def calculate_projected_normal(pos, ray_dir):
+    def calculate_projected_normal(pos, ray_dir, hit_shape=True):
         """Helper to find the true curved normal via distToShape"""
+        # If the ray entirely missed the shape, don't look for a normal.
+        if not hit_shape:
+            return ray_dir
+            
         test_pt = pos + ray_dir * 0.1
         dist, pts, info = target_shape.distToShape(Part.Vertex(test_pt))
+        
         if pts and dist > 1e-5:
             # pts[0][0] is the closest point on target_shape
             norm = test_pt - pts[0][0]
             if norm.Length > 1e-5:
                 norm.normalize()
-                return norm
+                # Guard against wild normals near edges by rejecting vectors 
+                # that snap to perpendicular side-walls (60-degree max deviation)
+                if norm.dot(ray_dir) > 0.5:
+                    return norm
+                    
         return ray_dir
 
     def get_mapping(u, v):
@@ -207,13 +216,15 @@ def calculate_pattern_shape(target_obj, target_face=None, pattern="Hexagon", til
             ray = Part.makeLine(p_center, p_out)
             intersections = target_shape.common(ray)
 
+            hit_shape = False
             if intersections.Vertexes:
                 best_v = max(intersections.Vertexes, key=lambda vtx: (vtx.Point - p_center).Length)
                 pos = best_v.Point
+                hit_shape = True
             else:
                 pos = App.Vector(Cx + R * math.cos(theta), Cy + R * math.sin(theta), v)
 
-            norm = calculate_projected_normal(pos, ray_dir)
+            norm = calculate_projected_normal(pos, ray_dir, hit_shape)
             tan_u = App.Vector(0,0,1).cross(norm)
             if tan_u.Length < 1e-4: tan_u = App.Vector(-math.sin(theta), math.cos(theta), 0)
             tan_u.normalize()
@@ -239,13 +250,15 @@ def calculate_pattern_shape(target_obj, target_face=None, pattern="Hexagon", til
             ray = Part.makeLine(p_center, p_out)
             intersections = target_shape.common(ray)
 
+            hit_shape = False
             if intersections.Vertexes:
                 best_v = max(intersections.Vertexes, key=lambda vtx: (vtx.Point - p_center).Length)
                 pos = best_v.Point
+                hit_shape = True
             else:
                 pos = p_center + ray_dir * R
 
-            norm = calculate_projected_normal(pos, ray_dir)
+            norm = calculate_projected_normal(pos, ray_dir, hit_shape)
             tan_u = App.Vector(0,0,1).cross(norm)
             if tan_u.Length < 1e-4: tan_u = App.Vector(1, 0, 0)
             tan_u.normalize()
@@ -266,12 +279,14 @@ def calculate_pattern_shape(target_obj, target_face=None, pattern="Hexagon", til
             ray = Part.makeLine(p_top, p_bot)
             intersections = target_shape.common(ray)
 
+            hit_shape = False
             if intersections.Vertexes:
                 pos = max(intersections.Vertexes, key=lambda vtx: vtx.Point.z).Point
+                hit_shape = True
             else:
                 pos = App.Vector(u, v, bbox.ZMax)
 
-            norm = calculate_projected_normal(pos, App.Vector(0,0,1))
+            norm = calculate_projected_normal(pos, App.Vector(0,0,1), hit_shape)
             tan_u = App.Vector(0,1,0).cross(norm)
             if tan_u.Length < 1e-4: tan_u = App.Vector(1, 0, 0)
             tan_u.normalize()
