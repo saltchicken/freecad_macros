@@ -115,12 +115,12 @@ def calculate_pattern_shape(target_obj, target_face=None, pattern="Hexagon", til
     original_bounds_box = None
     safe_size = max_dim * 2.0 + 100.0
 
-    if mapping == "Planar":
+    if mapping in ["Planar", "Projected Planar"]: # <-- Updated
         original_boundary_face = get_boundary_face(target_shape, 0.0)
         boundary_face = get_boundary_face(target_shape, border_size) if border_size > 0.0 else original_boundary_face
         if boundary_face:
             margin_volume = boundary_face.extrude(App.Vector(0, 0, bbox.ZMax + 2.0 - (bbox.ZMin - 1.0)))
-    elif mapping in ["Cylindrical", "Spherical"]:
+    elif mapping in ["Cylindrical", "Spherical", "Projected Cylindrical", "Projected Spherical"]: # <-- Updated
         if border_size > 0.0:
             z_min = bbox.ZMin + border_size
             z_max = bbox.ZMax - border_size
@@ -468,13 +468,13 @@ def calculate_pattern_shape(target_obj, target_face=None, pattern="Hexagon", til
                     if not filleted.isNull(): pillar = filleted
                 except Exception: pass
 
-        if mapping == "Planar" and margin_volume:
+        if mapping in ["Planar", "Projected Planar"] and margin_volume:
             try:
                 clipped = pillar.common(margin_volume)
                 if not clipped.isNull() and clipped.Volume > 1e-4: pillar = clipped
                 else: continue
             except Exception: pass
-        elif mapping in ["Cylindrical", "Spherical"] and safe_box:
+        elif mapping in ["Cylindrical", "Spherical", "Projected Cylindrical", "Projected Spherical"] and safe_box:
             try:
                 clipped = pillar.common(safe_box)
                 if not clipped.isNull() and clipped.Volume > 1e-4: pillar = clipped
