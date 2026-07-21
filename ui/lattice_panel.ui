@@ -20,8 +20,13 @@
      <item row="1" column="1">
       <widget class="QComboBox" name="mapping_combo">
        <item><property name="text"><string>Planar</string></property></item>
+       <item><property name="text"><string>Projected Planar</string></property></item>
        <item><property name="text"><string>Cylindrical</string></property></item>
+       <item><property name="text"><string>Projected Cylindrical</string></property></item>
        <item><property name="text"><string>Spherical</string></property></item>
+       <item><property name="text"><string>Projected Spherical</string></property></item>
+       <item><property name="text"><string>Radial</string></property></item>
+       <item><property name="text"><string>Surface UV</string></property></item>
       </widget>
      </item>
      <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Tile Radius (mm):</string></property></widget></item>
@@ -47,8 +52,6 @@
        <item><property name="text"><string>Common (Create Panels)</string></property></item>
       </widget>
      </item>
-     
-     <!-- NEW: Preview Toggle row -->
      <item row="11" column="0"><widget class="QLabel"><property name="text"><string>Preview Mode:</string></property></widget></item>
      <item row="11" column="1">
       <widget class="QCheckBox" name="preview_toggle_check">
