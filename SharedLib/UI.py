@@ -1,4 +1,3 @@
-<file path="SharedLib/UI.py">
 import FreeCAD as App
 import FreeCADGui as Gui
 
@@ -94,4 +93,3 @@ class BaseTaskPanel:
             App.ActiveDocument.recompute()
             
         Gui.Control.closeDialog()
-</file>
